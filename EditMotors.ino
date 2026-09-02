@@ -14,6 +14,13 @@ enum LocalDirectionStates
   BACKWARD_D,
   LEFT_D
 };
+int ir_pin = 23;
+
+volatile bool wallDetected = false;
+
+void IRAM_ATTR wallINT(){
+  wallDetected = true;
+}
 
 // Absolute yaw target for each logical direction (deg).
 // Right turn DECREASES yaw on this build, so going
@@ -36,12 +43,20 @@ LocalDirectionStates CurrentDirection;
 VL53L0X leftSensor;
  VL53L0X rightSensor;
 
-const int LEFT_XSHUT_PIN = 4;
-const int RIGHT_XSHUT_PIN = 2;
+const int LEFT_XSHUT_PIN = 5;
+const int RIGHT_XSHUT_PIN = 4;
 
 const uint8_t LEFT_SENSOR_ADDRESS = 0x30;
 const uint8_t RIGHT_SENSOR_ADDRESS = 0x31;
 
+float Kp_distance = 2.0;
+float Ki_distance = 0.0;
+float Kd_distance = 0.5;
+
+float distancePrevError = 0;
+const float distance_PID_MAX = 30.0;
+const float distance_INTEGRAL_LIMIT = 20.0;
+unsigned long distancePrevTime = 0;
 
 // LEFT MOTOR
 
@@ -258,9 +273,9 @@ const int SYNC_MAX_CORRECTION = 5;
 void setup() {
   Serial.begin(115200);
   InitializeVL53();
-
+  //IR Pin
+  pinMode(ir_pin, INPUT);
   // ON BOARD LED
-
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, LOW);
 
@@ -291,6 +306,7 @@ void setup() {
   pinMode(rightEncoderC1, INPUT);
   pinMode(rightEncoderC2, INPUT);
 
+  attachInterrupt(digitalPinToInterrupt(ir_pin), wallINT, FALLING);
   attachInterrupt(digitalPinToInterrupt(leftEncoderC1), leftEncoderISR_C1, CHANGE );
   attachInterrupt(digitalPinToInterrupt(leftEncoderC2), leftEncoderISR_C2, CHANGE );
 
@@ -311,6 +327,27 @@ void setup() {
 // LOOP
 void loop() {
 
+  // if(wallDetected){
+  //   Serial.println("WAll in front");
+  //   wallDetected = false;
+  //   delay(3000);
+
+  // }
+  // else
+  //   Serial.println("Wall is not found");
+  // wallDetected = false ;
+  // while(!wallDetected){
+  //   MoveStraight(20);
+  //   if(wallDetected){
+  //     stopMotor(LEFT);
+  //     stopMotor(RIGHT);
+  //     break;
+  //     // wallDeteced = true;
+  //   }
+  //   TurnRight90();
+  // }
+  
+  // delay(200);
   // TurnToYaw(90);
   // FIRST 90 DEGREE TURN
   //  MoveStraight(20);
@@ -325,14 +362,10 @@ void loop() {
 // MoveStraight(20);
 //    delay(20);
 //    TurnRight90();
-    float leftDistance = readLeftDistance();
-    float rightDistance = readRightDistance();
-
-    Serial.print("Left: ");
-    Serial.println(leftDistance);
-
-    Serial.print(" Right: ");
-    Serial.println(rightDistance);
+  MoveStraight();
+  
+  
+  // Serial.println("Hello");
   // delay(100);
   
     //     UpdateMPU_6050();
@@ -619,6 +652,21 @@ void MoveStraight(float targetDistance_cm) {
   while (true) {
 
     // DEBUG ENCODERS
+    if(front_wallDetected()){
+      stopMotor(LEFT);
+      stopMotor(RIGHT);
+
+      
+       while (front_wallDetected())
+      {
+        TurnRight90();
+
+        delay(50);
+      }
+      I = 0;
+      prevError = 0;
+      prevTime = millis();
+    }
 
     Serial.print("left: ");
     Serial.println(leftEncoderCount);
@@ -626,12 +674,10 @@ void MoveStraight(float targetDistance_cm) {
     Serial.print("right: ");
     Serial.println(rightEncoderCount);
 
-
     // AVERAGE DISTANCE
 
     long avgTicks = (leftEncoderCount + rightEncoderCount) / 2;
-
-
+    
     if (avgTicks >= targetTicks) {
 
       stopMotor(LEFT);
@@ -912,4 +958,315 @@ float readRightDistance()
   }
 
   return distance / 10.0;
+}
+void VLO_PID()
+{
+  // Read sensors
+  float leftDistance =
+    readLeftDistance();
+
+  float rightDistance =
+    readRightDistance();
+
+
+  // Check readings
+  if (
+    leftDistance <= 0 ||
+    rightDistance <= 0
+  )
+  {
+    stopMotor(LEFT);
+    stopMotor(RIGHT);
+    return;
+  }
+
+
+  // -------------------------------------------------
+  // SELECT ERROR
+  // -------------------------------------------------
+
+  float output = 0;
+
+
+  if (
+    leftDistance <= 12 &&
+    rightDistance <= 12
+  )
+  {
+
+    // يوجد حائط على اليمين واليسار
+    // استخدم VL53 Error
+
+    error =
+      leftDistance - rightDistance;
+
+
+    // Calculate dt
+    unsigned long currentTime =
+      millis();
+
+
+    float dt =
+      (currentTime - distancePrevTime) / 1000.0;
+
+
+    if (dt <= 0)
+    {
+      dt = 0.001;
+    }
+
+
+    distancePrevTime =
+      currentTime;
+
+
+    // P
+    P =
+      Kp_distance * error;
+
+
+    // I
+    I +=
+      error * dt * Ki_distance;
+
+
+    I =
+      constrain(
+        I,
+        -distance_INTEGRAL_LIMIT,
+        distance_INTEGRAL_LIMIT
+      );
+
+
+    // D
+    D =
+      Kd_distance *
+      ((error - distancePrevError) / dt);
+
+
+    distancePrevError =
+      error;
+
+
+    // PID output
+    output =
+      P + I + D;
+
+
+    // Limit output
+    output =
+      constrain(
+        output,
+        -distance_PID_MAX,
+        distance_PID_MAX
+      );
+
+
+    int leftSpeed =
+      baseSpeed - output;
+
+
+    int rightSpeed =
+      baseSpeed + output;
+
+
+    // Limit speeds
+    leftSpeed =
+      constrain(
+        leftSpeed,
+        0,
+        180
+      );
+
+
+    rightSpeed =
+      constrain(
+        rightSpeed,
+        0,
+        180
+      );
+
+
+    motorForward(
+      leftSpeed,
+      LEFT
+    );
+
+
+    motorForward(
+      rightSpeed,
+      RIGHT
+    );
+  }
+
+  else
+  {
+    output =
+      calcuate();
+  }
+
+
+  // Debug
+  Serial.print("L: ");
+  Serial.print(leftDistance);
+
+
+  Serial.print(" | R: ");
+  Serial.print(rightDistance);
+
+
+  Serial.print(" | Error: ");
+  Serial.print(error);
+
+
+  Serial.print(" | Output: ");
+  Serial.println(output);
+}
+float calcuate()
+{
+  error =
+    leftEncoderCount - rightEncoderCount;
+
+
+  currentTime = millis();
+
+  float dt =
+    currentTime - prevTime;
+
+
+  if (dt <= 0)
+    dt = 1;
+
+
+  // -------------------------------------------------
+  // PID
+  // -------------------------------------------------
+
+  P = error * Kp;
+
+
+  I += dt * Ki * error;
+
+
+  I = constrain(
+    I,
+    -maxPID_Out,
+    maxPID_Out
+  );
+
+
+  D =
+    ((error - prevError) / dt) * Kd;
+
+
+  prevError = error;
+
+  prevTime = currentTime;
+
+
+  float out =
+    constrain(
+      P + I + D,
+      -maxPID_Out,
+      maxPID_Out
+    );
+
+
+  // -------------------------------------------------
+  // MOTOR SPEED
+  // -------------------------------------------------
+
+  motorForward(
+    (int)(baseSpeed - out),
+    LEFT
+  );
+
+
+  motorForward(
+    (int)(baseSpeed + out),
+    RIGHT
+  );
+
+
+  return out;
+}
+bool front_wallDetected(){
+  return digitalRead(ir_pin) == LOW;
+}
+
+void detected_front(){
+
+ while(front_wallDetected){
+  stopMotor(LEFT);
+  stopMotor(RIGHT);
+  
+  TurnRight90();
+  delay(50);
+
+ }
+
+}
+void MoveStraight()
+{
+  // Reset PID
+  I = 0;
+  prevError = 0;
+  prevTime = millis();
+
+  while (true)
+  {
+    // =========================
+    // CHECK FRONT WALL
+    // =========================
+    if (front_wallDetected())
+    {
+      // Stop
+      stopMotor(LEFT);
+      stopMotor(RIGHT);
+
+      delay(100);
+
+      // Turn right 90 degrees
+      TurnRight90();
+      //reset the Encoders counts after each turn 
+      leftEncoderCount = 0;
+      rightEncoderCount = 0;
+      // Reset PID after turning
+      I = 0;
+      prevError = 0;
+      prevTime = millis();
+
+      continue;
+    }
+
+    // =========================
+    // ENCODER PID
+    // =========================
+    error = leftEncoderCount - rightEncoderCount;
+
+    currentTime = millis();
+
+    float dt = currentTime - prevTime;
+
+    if (dt <= 0)
+      dt = 1;
+
+    P = error * Kp;
+
+    I += dt * Ki * error;
+    I = constrain(I, -maxPID_Out, maxPID_Out);
+
+    D = ((error - prevError) / dt) * Kd;
+
+    prevError = error;
+    prevTime = currentTime;
+
+    float out = constrain(P + I + D,
+                          -maxPID_Out,
+                          maxPID_Out);
+
+    // Move forward
+    motorForward((int)(baseSpeed - out), LEFT);
+    motorForward((int)(baseSpeed + out), RIGHT);
+  }
 }
