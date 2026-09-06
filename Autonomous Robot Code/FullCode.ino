@@ -115,9 +115,6 @@ uint8_t teapotPacket[14] = {'$', 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0x00, 0x00, '\r',
 // ==================== Interrupt Variables ================
 // MPU INTERRUPT
 volatile bool MPUInterrupt = false;
-
-volatile bool wallDetected = false;
-
 volatile long leftEncoderCount = 0;
 volatile long rightEncoderCount = 0;
 
@@ -183,11 +180,6 @@ const float TURN_INTEGRAL_LIMIT = 10.0;
 
 
 // ==================== ISR Functions ================
-void IRAM_ATTR WallISR()
-{
-  wallDetected = true;
-}
-
 // Left Encoder
 void IRAM_ATTR leftEncoderISR_C1() 
 {
