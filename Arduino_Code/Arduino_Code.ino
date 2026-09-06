@@ -24,8 +24,8 @@ const int ticksPerRev = encoderPolesCount * 2 * motorGearRatio;
 #define leftEncoderC2 18
 
 //Right Encoder
-#define RightEncoderC1 16
-#define RightEncoderC2 17
+#define rightEncoderC1 16
+#define rightEncoderC2 17
 
 //Encoders counters
 volatile long leftEncoderCount = 0 ;
@@ -34,31 +34,38 @@ volatile long rightEncoderCount = 0;
 //Encoders Interrupts
 void IRAM_ATTR leftEncoderISR_C1(){
   bool a = digitalRead(leftEncoderC1);
-  bool b = digitalRead(leftENcoderC2);
+  bool b = digitalRead(leftEncoderC2);
   
   if(a == b)
     leftEncoderCount++;
   else
-    leftEncodrCount--;
+    leftEncoderCount--;
 }
+
 void IRAM_ATTR leftEncoderISR_C2(){
   bool a = digitalRead(leftEncoderC1);
-  bool b= digitalRead(leftEncoderC2);
+  bool b = digitalRead(leftEncoderC2);
 
   if(a != b)
     leftEncoderCount++;
   else
     leftEncoderCount--;
 }
-void IRAM_ATTR rightEncoderISR_C1(){
+
+void IRAM_ATTR rightEncoderISR_C1() 
+{
   bool a = digitalRead(rightEncoderC1);
   bool b = digitalRead(rightEncoderC2);
 
-  if(a == b)
-    righttEncoderCount--;
-  else
+  if (a == b) {
+    rightEncoderCount--;
+  }
+  else {
     rightEncoderCount++;
+  }
 }
+
+
 void IRAM_ATTR rightEncoderISR_C2(){
   bool a = digitalRead(rightEncoderC1);
   bool b = digitalRead(rightEncoderC2);
@@ -117,13 +124,15 @@ void setup() {
   //LEFT Motor
   pinMode(IN1_L, OUTPUT); // to make this pin an output pin
   pinMode(IN2_L, OUTPUT); // to make this pin an output pin
+
   analogWriteResolution(ENA_L, 8); // to make the PWM from 0 to 255
-  analogFrequency(ENA_L, 5000); // set the the PWM Frequency  
+  analogWriteFrequency(ENA_L, 5000); // set the the PWM Frequency
+  
   //RIGHT Motor
   pinMode(IN1_R, OUTPUT);
   pinMode(IN2_R, OUTPUT);
   analogWriteResolution(ENA_R, 8);
-  analogFrequency(ENA_R, 5000);
+  analogWriteFrequency(ENA_R, 5000);
 
   //Stop The motors at the start
   //left motor 
@@ -167,9 +176,10 @@ void loop() {
 
 float encoderToDitance(long ticks){
     
+    float ticksPerRev = encoderPolesCount * 2 * motorGearRatio;
     float ratio = PI * wheelDiameter;
 
-    return (ticks / tickPreRev) * ratio;
+    return (ticks / ticksPerRev) * ratio;
 }
 
 long ditanceToTicks(float distance_cm){
@@ -177,6 +187,7 @@ long ditanceToTicks(float distance_cm){
 
   return (distance_cm / ratio) * ticksPerRev;
 }
+
 void init_MPU(){
 
   mpu.initialize(); // initialization the mpu object 
@@ -240,6 +251,8 @@ void ReadMPU(){
 
 
 }
+
+
 void init_laserSensors(){
 
   pinMode(LEFT_XSHUT_PIN, OUTPUT); // this will make the xshut pins as output pin
@@ -253,38 +266,46 @@ void init_laserSensors(){
 
   //turing the left sensor 
   digitalWrite(LEFT_XSHUT_PIN, HIGH);
-  delay(10);
+  
+
   if(!leftSensor.init()){
     Serial.println("LEFT Sensor Failed!");
     while(true);
   }
-  leftSensot.setAddress(LEFT_SENSOR_ADDRESS);
+  leftSensor.setAddress(LEFT_SENSOR_ADDRESS);
+  leftSensor.setTimeout(100);
   leftSensor.startContinuous();
 
   //Start Right sensor 
 
   digitalWrite(RIGHT_XSHUT_PIN, HIGH);
-  delay(10);
+  
 
   if(!rightSensor.init()){
     Serial.println("RIGHT Sensor Failed!");
     while(true);
   }
+
   rightSensor.setAddress(RIGHT_SENSOR_ADDRESS);
+  rightSensor.setTimeout(100);
   rightSensor.startContinuous();
 
   Serial.println("Laser Sensors are initialized successfully ");
 }
+
+
+
 //this function will give the values in cm 
 void ReadLasers(){
 
-  leftDistance = leftSensor.readRangeContinuousMillimeters() /10.0;
-  rightDistance = rightSensor.readRangeContinuousMillimeters()/10.0;
+  leftDistance = leftSensor.readRangeContinuousMillimeters()   /10.0;
+  rightDistance = rightSensor.readRangeContinuousMillimeters() /10.0;
 
   Serial.print("Left: ");
   Serial.print(leftDistance);
+  Serial.print("cm ");
 
-  Serial.print("cm | Right: ");
+  Serial.print("| Right: ");
   Serial.print(rightDistance);
   Serial.println(" cm");
 }
