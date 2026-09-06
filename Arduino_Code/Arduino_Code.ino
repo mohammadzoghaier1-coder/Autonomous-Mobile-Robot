@@ -69,6 +69,44 @@ void IRAM_ATTR rightEncoderISR_C2(){
     rightEncoderCount++;
 }
 
+// MPU variables 
+MPU6050 mpu ; //object from MPU6050 that we used 
+bool dmpReady = false; //this will tell us if the DMP is ready 
+uint8_t mpuIntStatus; // stores MPU interrupt status 
+uint8_t devStatus; // stores initialization result 
+uint16_t packetSize; // size of one DMP packet
+uint16_t fifoCount; // amount of data currently in FIFO
+uint8_t fifoBuffer[64]; // stores DMP data
+
+//Orientation Variables
+//these vaiables will used for the motion oriantation 
+Quaternion q;
+VectorFloat gravity;
+float ypr[3];
+
+float yawAngle = 0.0; 
+
+#define INTERRUPT_PIN 15
+volatile bool mpuInterrupt = false;
+
+void IRAM_ATTR dmpDataReady(){
+  mpuInterrupt = true;
+}
+
+//Sensors 
+// XSHUT pins for the both seonsors 
+#define LEFT_XSHUT_PIN 5
+#define RIGHT_XSHUT_PIN 4
+
+#define LEFT_SENSOR_ADDRESS 0x30 //Address of the two sensors 
+#define RIGHT_SENSOR_ADDRESS 0x31
+
+VL53L0X leftSensor;//objects from laser sensor 
+VL53L0X rightSensor;
+
+float leftDistance = 0.0;
+float rightDistance = 0.0;
+
 void setup() {
   // put your setup code here, to run once:
   Serial.begin(115200);
@@ -111,17 +149,19 @@ attachInterrupt(digitalPinToInterrupt(rightEncoderC2), rightEncoderISR_C2, CHANG
 
 
 //MPU
-
-
-
-
+  init_MPU();
+  
 //Sensors
+  //laser Sensors 
+  init_laserSensors();
 
 
 }
 
 void loop() {
   // put your main code here, to run repeatedly:
+  ReadMPU();
+  ReadLasers();
 
 }
 
@@ -136,4 +176,115 @@ long ditanceToTicks(float distance_cm){
   float ratio = PI * wheelDiameter;
 
   return (distance_cm / ratio) * ticksPerRev;
+}
+void init_MPU(){
+
+  mpu.initialize(); // initialization the mpu object 
+  pinMode(INTERRUPT_PIN, INPUT); // this for make the pin as input pin
+  
+  devStatus = !mpu.dmpInitialize(); //stores the result of the mpu init
+  
+  if(devStatus == 0){
+    Serial.println("DMP Initialization Failed");
+  }else{
+
+    //Calibrate the accelerometer and gyroscope
+    // 6 -> for do multiple calibration iterations 
+    mpu.CalibrateAccel(6);
+    mpu.CalibrateGyro(6);
+
+    mpu.setDMPEnabled(true);//Enabling the DMP
+
+    //MPU INTERRUPT 
+    attachInterrupt(digitalPinToInterrupt(INTERRUPT_PIN), dmpDataReady, RISING);
+
+    /*
+      The DMP puts its data into something called the FIFO.
+      FIFO is basically a small data queue inside the MPU6050.
+      This function tells us:
+      "How many bytes belong to one complete DMP packet?"
+    */
+    packetSize = mpu.dmpGetFIFOPacketSize();//Store the pucket size 
+
+    Serial.println("DMP Initialized Successfully");
+  }
+
+}
+//This function is just for read and prepare the dmp mpu functions   
+void ReadMPU(){
+  if(!dmpReady)
+    return;
+
+  if(!mpuInterrupt)
+    return;
+
+  mpuInterrupt = false;
+  fifoCount = mpu.getFIFOCount();
+
+  if(fifoCount == 1024){
+    mpu.resetFIFO();
+    return;
+  }
+  //this for packetizing the data until we reach packerSize to having complete packet 
+  while(fifoCount < packetSize){
+
+    fifoCount = mpu.getFIFOCount();
+  }
+
+  mpu.getFIFOBytes(fifoBuffer, packetSize); //this will copy the packet to fifoBuffer variable
+  mpu.dmpGetQuaternion(&q, fifoBuffer); //this for extracting the quaternion from the dmp packet
+  mpu.dmpGetGravity(&gravity, &q); //this for calculate the gravity vector 
+  mpu.dmpGetYawPitchRoll(ypr, &q, &gravity); //this for get and assigned  yaw bitch roll  
+
+  float yawAngle = ypr[0] * 180 /M_PI;//convert the radians into degrees 
+
+
+}
+void init_laserSensors(){
+
+  pinMode(LEFT_XSHUT_PIN, OUTPUT); // this will make the xshut pins as output pin
+  pinMode(RIGHT_XSHUT_PIN, OUTPUT);
+  
+  //turining both sensors off 
+  digitalWrite(LEFT_XSHUT_PIN, LOW);
+  digitalWrite(RIGHT_XSHUT_PIN, LOW);
+
+  //turning and assign the address for sensors sensor by sensor to avoid the conflicts address problems 
+
+  //turing the left sensor 
+  digitalWrite(LEFT_XSHUT_PIN, HIGH);
+  delay(10);
+  if(!leftSensor.init()){
+    Serial.println("LEFT Sensor Failed!");
+    while(true);
+  }
+  leftSensot.setAddress(LEFT_SENSOR_ADDRESS);
+  leftSensor.startContinuous();
+
+  //Start Right sensor 
+
+  digitalWrite(RIGHT_XSHUT_PIN, HIGH);
+  delay(10);
+
+  if(!rightSensor.init()){
+    Serial.println("RIGHT Sensor Failed!");
+    while(true);
+  }
+  rightSensor.setAddress(RIGHT_SENSOR_ADDRESS);
+  rightSensor.startContinuous();
+
+  Serial.println("Laser Sensors are initialized successfully ");
+}
+//this function will give the values in cm 
+void ReadLasers(){
+
+  leftDistance = leftSensor.readRangeContinuousMillimeters() /10.0;
+  rightDistance = rightSensor.readRangeContinuousMillimeters()/10.0;
+
+  Serial.print("Left: ");
+  Serial.print(leftDistance);
+
+  Serial.print("cm | Right: ");
+  Serial.print(rightDistance);
+  Serial.println(" cm");
 }
