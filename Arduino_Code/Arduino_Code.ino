@@ -41,24 +41,31 @@ void IRAM_ATTR leftEncoderISR_C1(){
   else
     leftEncoderCount--;
 }
+
 void IRAM_ATTR leftEncoderISR_C2(){
   bool a = digitalRead(leftEncoderC1);
-  bool b= digitalRead(leftEncoderC2);
+  bool b = digitalRead(leftEncoderC2);
 
   if(a != b)
     leftEncoderCount++;
   else
     leftEncoderCount--;
 }
-void IRAM_ATTR rightEncoderISR_C1(){
+
+void IRAM_ATTR rightEncoderISR_C1() 
+{
   bool a = digitalRead(rightEncoderC1);
   bool b = digitalRead(rightEncoderC2);
 
-  if(a == b)
+  if (a == b) {
     rightEncoderCount--;
-  else
+  }
+  else {
     rightEncoderCount++;
+  }
 }
+
+
 void IRAM_ATTR rightEncoderISR_C2(){
   bool a = digitalRead(rightEncoderC1);
   bool b = digitalRead(rightEncoderC2);
@@ -120,6 +127,7 @@ void setup() {
   //LEFT Motor
   pinMode(IN1_L, OUTPUT); // to make this pin an output pin
   pinMode(IN2_L, OUTPUT); // to make this pin an output pin
+
   analogWriteResolution(ENA_L, 8); // to make the PWM from 0 to 255
   analogWriteFrequency(ENA_L, 5000); // set the the PWM Frequency  
   //RIGHT Motor
@@ -172,6 +180,7 @@ void loop() {
 
 float encoderToDistance(long ticks){
     
+    float ticksPerRev = encoderPolesCount * 2 * motorGearRatio;
     float ratio = PI * wheelDiameter;
 
     return ((float)ticks / ticksPerRev) * ratio;
@@ -182,6 +191,7 @@ long distanceToTicks(float distance_cm){
 
   return (distance_cm / ratio) * ticksPerRev;
 }
+
 void init_MPU(){
 
   mpu.initialize(); // initialization the mpu object 
@@ -245,6 +255,8 @@ void ReadMPU(){
 
 
 }
+
+
 void init_laserSensors(){
 
   pinMode(LEFT_XSHUT_PIN, OUTPUT); // this will make the xshut pins as output pin
@@ -258,7 +270,8 @@ void init_laserSensors(){
 
   //turing the left sensor 
   digitalWrite(LEFT_XSHUT_PIN, HIGH);
-  delay(10);
+  
+
   if(!leftSensor.init()){
     Serial.println("LEFT Sensor Failed!");
     while(true);
@@ -270,28 +283,33 @@ void init_laserSensors(){
   //Start Right sensor 
 
   digitalWrite(RIGHT_XSHUT_PIN, HIGH);
-  delay(10);
+  
 
   if(!rightSensor.init()){
     Serial.println("RIGHT Sensor Failed!");
     while(true);
   }
+
   rightSensor.setAddress(RIGHT_SENSOR_ADDRESS);
   rightSensor.setTimeout(100);
   rightSensor.startContinuous();
 
   Serial.println("Laser Sensors are initialized successfully ");
 }
+
+
+
 //this function will give the values in cm 
 void ReadLasers(){
 
   leftDistance = leftSensor.readRangeContinuousMillimeters() /10.0;
-  rightDistance = rightSensor.readRangeContinuousMillimeters() / 10.0;
+  rightDistance = rightSensor.readRangeContinuousMillimeters() /10.0;
 
   Serial.print("Left: ");
   Serial.print(leftDistance);
+  Serial.print("cm ");
 
-  Serial.print("cm | Right: ");
+  Serial.print("| Right: ");
   Serial.print(rightDistance);
   Serial.println(" cm");
 }
