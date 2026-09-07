@@ -8,6 +8,18 @@ const float wheelDiameter = 4.6;
 const int encoderPolesCount = 14;
 const int motorGearRatio = 29;
 const int ticksPerRev = encoderPolesCount * 2 * motorGearRatio;
+const int baseSpeed = 110;
+
+//Constants of PID 
+const float SYNC_KP = 1.0; //decide how strongly we react when one wheel is ahead of other 
+const float SYNC_MAX_CORRECTION = 5;// to limit the max corrections and not became to large 
+
+const float WALL_KP = 2.0; // decide how strongly we react when the robot is not centered
+const float MAX_WALL_CORRECTION = 10.0;// to control laser and not give an aggressive values 
+
+//varaibles of the PID 
+float encoderCorrection = 0.0;
+float wallCorrection = 0.0;
 
 //LEFT MOTOR
 #define ENA_L 33
@@ -181,7 +193,6 @@ void loop() {
 
 float encoderToDistance(long ticks){
     
-    float ticksPerRev = encoderPolesCount * 2 * motorGearRatio;
     float ratio = PI * wheelDiameter;
 
     return ((float)ticks / ticksPerRev) * ratio;
@@ -325,11 +336,11 @@ void leftMotor(int speed ){
     speed < 0 move backward 
   */
   if(speed > 0){ //move forward 
-    digitalWrite(IN1_L, HIGH);
-    digitalWrite(IN2_L, LOW);
-  }else if (speed < 0 ){ //move backward 
     digitalWrite(IN1_L, LOW);
     digitalWrite(IN2_L, HIGH);
+  }else if (speed < 0 ){ //move backward 
+    digitalWrite(IN1_L, HIGH);
+    digitalWrite(IN2_L, LOW);
   }else if(speed == 0){ //stop
     digitalWrite(IN1_L, LOW);
     digitalWrite(IN2_L, LOW);
@@ -346,11 +357,11 @@ void rightMotor(int speed){
     speed < 0 move backward 
   */
   if(speed > 0){ //move forward 
-    digitalWrite(IN1_R, HIGH);
-    digitalWrite(IN2_R, LOW);
-  }else if (speed < 0 ){ //move backward 
     digitalWrite(IN1_R, LOW);
     digitalWrite(IN2_R, HIGH);
+  }else if (speed < 0 ){ //move backward 
+    digitalWrite(IN1_R, HIGH);
+    digitalWrite(IN2_R, LOW);
   }else if(speed == 0){ //stop
     digitalWrite(IN1_R, LOW);
     digitalWrite(IN2_R, LOW);
@@ -366,9 +377,12 @@ void ResetEncoders(){
   leftEncoderCount = 0 ;
   rightEncoderCount = 0;
 }
+
 void moveStraight(float distance_cm){
   ResetEncoders();
-
+  wallCorrection = 0;
+  encoderCorrection = 0;
+  
   long targetTicks = distanceToTicks(distance_cm); //this will convert the ditance into encoders ticks
   setMotorsSpeed(110,110);
   while(true){
@@ -383,7 +397,60 @@ void moveStraight(float distance_cm){
       break;
     }
 
+    //Encoders Correction 
+    encodersCorrection(leftTicks, rightTicks);
+
+    ReadLasers();
+    //Lasers Correction 
+    lasersCorrection();
+
+    //Synchronized The motors  Speed 
+    syncMotors();
   }
   setMotorsSpeed(0,0); // stop the motors
 
+}
+
+//this function is like a P-Controller for the encodres and motors speed 
+//and we used it to  synchronized the motors speed 
+void encodersCorrection(const long leftTicks, const long rightTicks){
+
+  long encoderError = leftTicks - rightTicks;
+
+  encoderCorrection = SYNC_KP * encoderError; 
+
+  encoderCorrection = constrain(
+    encoderCorrection, -SYNC_MAX_CORRECTION, SYNC_MAX_CORRECTION
+  ); // this will put an limit on the encoderCorrection value to be from -val to +val we init before 
+
+
+}
+void lasersCorrection(){
+  
+  wallCorrection = 0;
+
+  bool validateLeft = leftDistance > 2.0 && leftDistance < 30.0;
+  bool validateRight= rightDistance > 2.0 && rightDistance < 30.0;
+
+  if(validateLeft && validateRight){ 
+
+    float wallError = leftDistance - rightDistance;
+
+    wallCorrection = WALL_KP * wallError;
+
+    wallCorrection = constrain(
+      wallCorrection, -MAX_WALL_CORRECTION, MAX_WALL_CORRECTION
+    );
+
+  } 
+}
+
+void syncMotors(){
+  int leftSpeed = baseSpeed - encoderCorrection - wallCorrection;
+  int rightSpeed = baseSpeed + encoderCorrection + wallCorrection;
+
+  leftSpeed = constrain(leftSpeed, 0, 255);
+  rightSpeed= constrain(rightSpeed, 0, 255);
+
+  setMotorsSpeed(leftSpeed, rightSpeed);
 }
