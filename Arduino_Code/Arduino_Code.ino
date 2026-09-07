@@ -114,6 +114,9 @@ VL53L0X rightSensor;
 float leftDistance = 0.0;
 float rightDistance = 0.0;
 
+//IR 
+#define IR_PIN 23
+
 void setup() {
   // put your setup code here, to run once:
   Serial.begin(115200);
@@ -126,8 +129,7 @@ void setup() {
   pinMode(IN2_L, OUTPUT); // to make this pin an output pin
 
   analogWriteResolution(ENA_L, 8); // to make the PWM from 0 to 255
-  analogWriteFrequency(ENA_L, 5000); // set the the PWM Frequency
-  
+  analogWriteFrequency(ENA_L, 5000); // set the the PWM Frequency  
   //RIGHT Motor
   pinMode(IN1_R, OUTPUT);
   pinMode(IN2_R, OUTPUT);
@@ -164,25 +166,27 @@ attachInterrupt(digitalPinToInterrupt(rightEncoderC2), rightEncoderISR_C2, CHANG
   //laser Sensors 
   init_laserSensors();
 
+  //IR
+  pinMode(IR_PIN,INPUT); 
+
 
 }
 
 void loop() {
   // put your main code here, to run repeatedly:
-  ReadMPU();
-  ReadLasers();
+  moveStraight(20);
 
 }
 
-float encoderToDitance(long ticks){
+float encoderToDistance(long ticks){
     
     float ticksPerRev = encoderPolesCount * 2 * motorGearRatio;
     float ratio = PI * wheelDiameter;
 
-    return (ticks / ticksPerRev) * ratio;
+    return ((float)ticks / ticksPerRev) * ratio;
 }
 
-long ditanceToTicks(float distance_cm){
+long distanceToTicks(float distance_cm){
   float ratio = PI * wheelDiameter;
 
   return (distance_cm / ratio) * ticksPerRev;
@@ -205,7 +209,7 @@ void init_MPU(){
     mpu.CalibrateGyro(6);
 
     mpu.setDMPEnabled(true);//Enabling the DMP
-
+    dmpReady = true;
     //MPU INTERRUPT 
     attachInterrupt(digitalPinToInterrupt(INTERRUPT_PIN), dmpDataReady, RISING);
 
@@ -232,7 +236,7 @@ void ReadMPU(){
   mpuInterrupt = false;
   fifoCount = mpu.getFIFOCount();
 
-  if(fifoCount == 1024){
+  if(fifoCount >= 1024){
     mpu.resetFIFO();
     return;
   }
@@ -247,7 +251,7 @@ void ReadMPU(){
   mpu.dmpGetGravity(&gravity, &q); //this for calculate the gravity vector 
   mpu.dmpGetYawPitchRoll(ypr, &q, &gravity); //this for get and assigned  yaw bitch roll  
 
-  float yawAngle = ypr[0] * 180 /M_PI;//convert the radians into degrees 
+  yawAngle = ypr[0] * 180 /M_PI;//convert the radians into degrees 
 
 
 }
@@ -298,7 +302,7 @@ void init_laserSensors(){
 //this function will give the values in cm 
 void ReadLasers(){
 
-  leftDistance = leftSensor.readRangeContinuousMillimeters()   /10.0;
+  leftDistance = leftSensor.readRangeContinuousMillimeters() /10.0;
   rightDistance = rightSensor.readRangeContinuousMillimeters() /10.0;
 
   Serial.print("Left: ");
@@ -308,4 +312,77 @@ void ReadLasers(){
   Serial.print("| Right: ");
   Serial.print(rightDistance);
   Serial.println(" cm");
+}
+bool isWallFront(){
+  return digitalRead(IR_PIN) == LOW;
+}
+void leftMotor(int speed ){
+  //the function logic is depends on speed 
+  /*
+    speed = 0 stop motors 
+    speed > 0 move forward
+    speed < 0 move backward 
+  */
+  if(speed > 0){ //move forward 
+    digitalWrite(IN1_L, HIGH);
+    digitalWrite(IN2_L, LOW);
+  }else if (speed < 0 ){ //move backward 
+    digitalWrite(IN1_L, LOW);
+    digitalWrite(IN2_L, HIGH);
+  }else if(speed == 0){ //stop
+    digitalWrite(IN1_L, LOW);
+    digitalWrite(IN2_L, LOW);
+  }
+  //assign the speed as a PWM 
+  analogWrite(ENA_L, abs(speed));
+
+}
+void rightMotor(int speed){
+  //the function logic is depends on speed 
+  /*
+    speed = 0 stop motors 
+    speed > 0 move forward
+    speed < 0 move backward 
+  */
+  if(speed > 0){ //move forward 
+    digitalWrite(IN1_R, HIGH);
+    digitalWrite(IN2_R, LOW);
+  }else if (speed < 0 ){ //move backward 
+    digitalWrite(IN1_R, LOW);
+    digitalWrite(IN2_R, HIGH);
+  }else if(speed == 0){ //stop
+    digitalWrite(IN1_R, LOW);
+    digitalWrite(IN2_R, LOW);
+  }
+  //assign the speed as a PWM 
+  analogWrite(ENA_R, abs(speed));
+}
+void setMotorsSpeed(int leftMotorSpeed, int rightMotorSpeed){
+  leftMotor(leftMotorSpeed);
+  rightMotor(rightMotorSpeed);
+}
+void ResetEncoders(){
+  leftEncoderCount = 0 ;
+  rightEncoderCount = 0;
+}
+void moveStraight(float distance_cm){
+  ResetEncoders();
+
+  long targetTicks = distanceToTicks(distance_cm); //this will convert the ditance into encoders ticks
+  setMotorsSpeed(110,110);
+  while(true){
+    noInterrupts();
+
+    long leftTicks = leftEncoderCount;
+    long rightTicks= rightEncoderCount;
+    interrupts();
+    long avgTicks = (leftTicks + rightTicks )/ 2; 
+
+    if(avgTicks >= targetTicks){
+      break;
+    }
+
+  }
+  setMotorsSpeed(0,0); // stop the motors
+
 }
