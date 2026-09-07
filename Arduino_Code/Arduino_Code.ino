@@ -175,6 +175,7 @@ attachInterrupt(digitalPinToInterrupt(rightEncoderC2), rightEncoderISR_C2, CHANG
 void loop() {
   // put your main code here, to run repeatedly:
   moveStraight(20);
+  delay(4000);
 
 }
 
