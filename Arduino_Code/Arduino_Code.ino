@@ -9,6 +9,10 @@ const int encoderPolesCount = 14;
 const int motorGearRatio = 29;
 const int ticksPerRev = encoderPolesCount * 2 * motorGearRatio;
 const int baseSpeed = 110;
+const int globalDelay = 20;
+const float MIN_WALL_DISTANCE = 2.0;
+const float MAX_WALL_DISTANCE = 30.0;
+const float TARGET_WALL_DISTANCE = 6.0; 
 
 //Constants of PID 
 const float SYNC_KP = 1.0; //decide how strongly we react when one wheel is ahead of other 
@@ -408,6 +412,7 @@ void moveStraight(float distance_cm){
     syncMotors();
   }
   setMotorsSpeed(0,0); // stop the motors
+  delay(globalDelay);
 
 }
 
@@ -428,21 +433,31 @@ void encodersCorrection(const long leftTicks, const long rightTicks){
 void lasersCorrection(){
   
   wallCorrection = 0;
+  wallError = 0;
 
-  bool validateLeft = leftDistance > 2.0 && leftDistance < 30.0;
-  bool validateRight= rightDistance > 2.0 && rightDistance < 30.0;
+  bool validateLeft = leftDistance > MIN_WALL_DISTANCE && leftDistance < MAX_WALL_DISTANCE;
+  bool validateRight= rightDistance > MIN_WALL_DISTANCE && rightDistance < MAX_WALL_DISTANCE;
 
-  if(validateLeft && validateRight){ 
+  if(validateLeft && validateRight){ //this case is betweeen 2 walls 
 
-    float wallError = leftDistance - rightDistance;
+    wallError = leftDistance - rightDistance;
 
-    wallCorrection = WALL_KP * wallError;
+  }else if (validateLeft && !validateRight){ //this case is for left wall and free-wall Right side 
 
-    wallCorrection = constrain(
+    wallError = leftDistance - TARGET_WALL_DISTANCE;
+
+  }else if (!validateLeft && validateRight){ //this case is for right wall and free-wall left side
+
+    wallError = rightDistance - TARGET_WALL_DISTANCE; 
+    
+  }else{ //free wall in the right side and left side 
+    wallError = 0;
+  }
+  wallCorrection = WALL_KP * wallError;
+
+  wallCorrection = constrain(
       wallCorrection, -MAX_WALL_CORRECTION, MAX_WALL_CORRECTION
     );
-
-  } 
 }
 
 void syncMotors(){
@@ -453,4 +468,50 @@ void syncMotors(){
   rightSpeed= constrain(rightSpeed, 0, 255);
 
   setMotorsSpeed(leftSpeed, rightSpeed);
+}
+//Test function for see the wallCorrection 
+// my wall correction is if left > right -> result will be +val -> then will decrease left motor speed and increase right one 
+// else if left < right result will be -val -> then will increase left motor speed and decrease the right one 
+// else the error will be 0 and no correction
+void TESTWallCorrection(){
+  readLasers();
+
+  wallCorrection = 0 ;
+  float wallError = leftDistance - rightDistrance;
+
+  wallCorrection  = WALL_KP * wallError ;
+   wallCorrection = constrain(
+        wallCorrection,
+        -WALL_MAX_CORRECTION,
+        WALL_MAX_CORRECTION
+    );
+
+    int leftSpeed =
+        baseSpeed - wallCorrection;
+
+    int rightSpeed =
+        baseSpeed + wallCorrection;
+
+    leftSpeed = constrain(leftSpeed, 0, 255);
+    rightSpeed = constrain(rightSpeed, 0, 255);
+
+    Serial.print("Left distance: ");
+    Serial.print(leftDistance);
+
+    Serial.print(" | Right distance: ");
+    Serial.print(rightDistance);
+
+    Serial.print(" | Error: ");
+    Serial.print(wallError);
+
+    Serial.print(" | Correction: ");
+    Serial.print(wallCorrection);
+
+    Serial.print(" | L speed: ");
+    Serial.print(leftSpeed);
+
+    Serial.print(" | R speed: ");
+    Serial.println(rightSpeed);
+
+    SetMotors(leftSpeed, rightSpeed);
 }
