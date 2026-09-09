@@ -8,6 +8,7 @@
 
 #include <vector>
 #include <stack>
+#include<queue>
 #include <utility>
 #include <algorithm>
 
@@ -55,6 +56,9 @@ float baseSpeed = 125;
 
 const int Step = 12;
 const int WALL_DETECTED = 8;
+
+float targetDistance_cm = Step;
+float targetWallDistance = 12;
 
 // Lazers Addresses
 const uint8_t LEFT_SENSOR_ADDRESS = 0x30;
@@ -107,9 +111,14 @@ VectorFloat gravity;
 float euler[3];
 float ypr[3];
 
+struct OutError 
+{
+  float leftSpeed;
+  float rightSpeed;
+};
+
 // TEAPOT PACKET
 uint8_t teapotPacket[14] = { '$', 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0x00, 0x00, '\r', '\n' };
-
 
 
 // ==================== Interrupt Variables ================
@@ -231,6 +240,7 @@ void IRAM_ATTR leftEncoderISR_C2() {
   }
 }
 
+
 // Right Encoder
 void IRAM_ATTR rightEncoderISR_C1() {
   bool a = digitalRead(rightEncoderC1);
@@ -317,6 +327,9 @@ void setup() {
   MazeLog("Running...");
   MazeLog("Flood Fill Algorithm");
   FirstRun();
+  
+  delay(5000);
+  SecondRun();
 }
 
 // ==================== Loop Function ================
@@ -436,13 +449,6 @@ void InitializeVL53() {
   rightSensor.startContinuous();
 
   Serial.println("Both sensors sensors ready.");
-}
-
-
-// ==================== PID Functions ================
-void VLO_PID()
-{
-  
 }
 
 
@@ -587,24 +593,12 @@ void WriteLeftDistance(float distance)
 
 }
 
+
 void WriteRightDistance(float distance)
 {
   Serial.print(" | Right Laser: ");
   Serial.print(distance, 2);
   Serial.println("cm");
-}
-
-
-
-// Normalize Angle
-float NormalizeAngle(float angle) {
-  if (angle > 180)
-    angle -= 360;
-
-  if (angle < -180)
-    angle += 360;
-
-  return angle;
 }
 
 
@@ -626,6 +620,7 @@ void TurnRight90() {
   CurrentDirection = newDirection;
 }
 
+
 void TurnLeft90() {
 
   stopMotor(LEFT);
@@ -646,20 +641,20 @@ void MoveStraight(float targetDistance_cm) {
   prevError = 0;
   prevTime = millis();
 
-  
-
   while (true) {
 
     // DEBUG ENCODERS
-    if (IsFrontWallDetected()()) {
+    if (IsFrontWallDetected()) {
       stopMotor(LEFT);
       stopMotor(RIGHT);
 
-      while (IsFrontWallDetected()()) {
+      while (IsFrontWallDetected()) {
         TurnRight90();
 
         delay(50);
       }
+
+      // Reset Encoder PID after turning
       I_Encoder = 0;
       prevError = 0;
       prevTime = millis();
@@ -675,9 +670,18 @@ void MoveStraight(float targetDistance_cm) {
     }
 
     // Error
-    CalculateError(leftEncoderCount,rightEncoderCount);
+    float error = CalculateError(rightEncoderCount, leftEncoderCount);
 
-    float out = UpdateEncoderPID();
+    // Calculate time difference
+    unsigned long currentTime = millis();
+    float dt = CalculateDT(currentTime, prevTime);
+
+    prevTime = currentTime;
+    
+    float out = CalculateEncoderPID(error, dt);
+    
+
+    
 
     // Motor Speed
     MotorForward((int)(baseSpeed - out), LEFT);
@@ -689,26 +693,18 @@ void MoveStraight(float targetDistance_cm) {
 // Turn to specific Yaw
 void TurnToYaw(float targetYaw) {
 
-  float integral = 0;
+  // Reset Turn PID
+  float I_mpu = 0;
   float prevError = 0;
   bool firstSample = true;
   unsigned long prevTime = millis();
+
   while (true) {
     // UPDATE MPU6050
     UpdateMPU_6050();
 
     // Calculate Error
     float error = NormalizeAngle(targetYaw - yawAngle);
-
-    // // SERIAL DEBUG
-    // Serial.print("Yaw: ");
-    // Serial.print(yawAngle, 2);
-
-    // Serial.print(" | Target: ");
-    // Serial.print(targetYaw, 2);
-
-    // Serial.print(" | Error: ");
-    // Serial.println(error, 2);
 
     // Check if we reached target
     if (abs(error) <= TURN_TOLERANCE) {
@@ -728,13 +724,10 @@ void TurnToYaw(float targetYaw) {
     }
 
     // Calculate DT for the derivative function
-    unsigned long now = millis();
-    float dt = (now - prevTime) / 1000.0;
+    unsigned long currentTime = millis();
+    float dt = CalculateDT(currentTime, prevTime);
 
-    if (dt <= 0)
-      dt = 0.001;
-
-    prevTime = now;
+    prevTime = currentTime;
 
     // FIRST SAMPLE
     if (firstSample) {
@@ -742,16 +735,7 @@ void TurnToYaw(float targetYaw) {
       firstSample = false;
     }
 
-    // Integral
-    integral = constrain(integral + error * dt, -TURN_INTEGRAL_LIMIT, TURN_INTEGRAL_LIMIT);
-
-    // DERIVATIVE
-    float derivative = (error - prevError) / dt;
-
-    prevError = error;
-
-    // PID OUTPUT
-    float output = Kp_turn * error + Ki_turn * integral + Kd_turn * derivative;
+    float output = CalculateTurnPID(error, dt);
 
     // Debugging
     Serial.print("Yaw: ");
@@ -762,10 +746,6 @@ void TurnToYaw(float targetYaw) {
 
     Serial.print(" | Output: ");
     Serial.println(output, 2);
-
-    // Limite Output
-    output = constrain(output, -TURN_SPEED_MAX, TURN_SPEED_MAX);
-
 
     // Minimum effective speed
     if (abs(output) < TURN_MIN_EFFECTIVE_SPEED) {
@@ -796,9 +776,117 @@ void TurnToYaw(float targetYaw) {
   delay(100);
 }
 
-bool IsFrontWallDetected()() {
-  return digitalRead(IR_pin) == LOW;
+
+void LaserCoordinator()
+{
+  float leftDistance = ReadLeftDistance();
+  float rightDistance = ReadRightDistance();
+
+  // Reset encoder distance
+  ResetEncoders();
+
+  // Reset Laser PID
+  I_laser = 0;
+  distancePrevError = 0;
+  distancePrevTime = millis();
+
+  // Both walls detected
+  if (leftDistance <= 8 && rightDistance <= 8)
+  {
+    while (TargetDistance())
+    {
+      OutError effecterror = OutputErrorForlaser();
+
+      MotorForward(effecterror.leftSpeed, LEFT);
+      MotorForward(effecterror.rightSpeed, RIGHT);
+    }
+  }
+  // Left wall detected
+  else if (leftDistance <= 8 && rightDistance >= 8)
+  {
+    while (TargetDistance())
+    {
+      OutError effecterror = OutputErrorForLeftWall();
+
+      MotorForward(effecterror.leftSpeed, LEFT);
+      MotorForward(effecterror.rightSpeed, RIGHT);
+    }
+  }
+  // Right wall detected
+  else if (leftDistance >= 8 && rightDistance <= 8)
+  {
+    while (TargetDistance())
+    {
+      OutError effecterror = OutputErrorForRightWall();
+
+      MotorForward(effecterror.leftSpeed,LEFT);
+      MotorForward(effecterror.rightSpeed,RIGHT);
+    }
+  }
 }
+
+
+
+// ==================== Functions =================
+// Calculate Delta Time
+float CalculateDT(unsigned long currentTime, unsigned long prevTime)
+{
+  float dt = (currentTime - prevTime) / 1000.0;
+
+  if (dt <= 0)
+  {
+    dt = 0.001;
+  }
+
+  return dt;
+}
+
+
+long CalculateTargetTicks(float targetDistance_cm)
+{
+  float ticksPerRev = encoderPolesCount * 2 * motorGearRatio;
+  float wheelCircumference_cm = PI * wheelDiameter;
+
+  return (long)((targetDistance_cm / wheelCircumference_cm) * ticksPerRev);
+}
+
+
+float CalculateError(float desiredValue, float measuredValue)
+{
+  return (desiredValue - measuredValue);
+}
+
+
+bool TargetDistance()
+{
+  float ticksPerRev = encoderPolesCount * 2 * motorGearRatio;
+  float wheelCircumference_cm = PI * wheelDiameter;
+  long targetTicks = (long)((targetDistance_cm / wheelCircumference_cm) * ticksPerRev);
+  long avgTicks = GetAverageEncoderTicks();
+
+  if (avgTicks >= targetTicks) {
+    stopMotor(LEFT);
+    stopMotor(RIGHT);
+
+    return false;
+  } else {
+    return true;
+  }
+
+}
+
+
+// Normalize Angle
+float NormalizeAngle(float angle) {
+  if (angle > 180)
+    angle -= 360;
+
+  if (angle < -180)
+    angle += 360;
+
+  return angle;
+}
+
 
 void DetectedFront() {
 
@@ -811,13 +899,181 @@ void DetectedFront() {
 }
 
 
+void ResetEncoders()
+{
+  leftEncoderCount = 0;
+  rightEncoderCount = 0;
+}
+
+
+long GetAverageEncoderTicks() {
+  return (leftEncoderCount + rightEncoderCount) / 2;
+}
+
+
+bool IsFrontWallDetected() {
+  return digitalRead(IR_pin) == LOW;
+}
+
+
+
+// ==================== Laser Error Functions ====================
+OutError OutputErrorForlaser()
+{
+  float leftDistance = ReadLeftDistance();
+  float rightDistance = ReadRightDistance();
+
+  if (leftDistance <= 0 || rightDistance <= 0)
+  {
+    stopMotor(LEFT);
+    stopMotor(RIGHT);
+    return {0, 0};
+  }
+
+  error = CalculateError(rightDistance, leftDistance);
+
+  unsigned long currentTime = millis();
+
+  float dt = CalculateDT(currentTime, distancePrevTime);
+
+  distancePrevTime = currentTime;
+  float output = CalculateLaserPID(error, dt);
+
+
+  int leftSpeed = baseSpeed - output;
+  int rightSpeed = baseSpeed + output;
+
+
+  leftSpeed = constrain(leftSpeed, 0, 180);
+  rightSpeed = constrain(rightSpeed, 0, 180);
+
+
+  return {leftSpeed, rightSpeed};
+}
+
+
+OutError OutputErrorForLeftWall()
+{
+  float leftDistance = ReadLeftDistance();
+
+  if (leftDistance <= 0)
+  {
+    stopMotor(LEFT);
+    stopMotor(RIGHT);
+    return {0, 0};
+  }
+
+  error = CalculateError(targetWallDistance, leftDistance);
+  unsigned long currentTime = millis();
+  float dt = CalculateDT(currentTime, distancePrevTime);
+
+  distancePrevTime = currentTime;
+
+  float output = CalculateLaserPID(error, dt);
+
+  int leftSpeed = baseSpeed - output;
+  int rightSpeed = baseSpeed + output;
+
+  leftSpeed = constrain(leftSpeed, 0, 180);
+  rightSpeed = constrain(rightSpeed, 0, 180);
+
+  return {leftSpeed, rightSpeed};
+}
+
+
+OutError OutputErrorForRightWall()
+{
+  float rightDistance = ReadRightDistance();
+  if (rightDistance <= 0)
+  {
+    stopMotor(LEFT);
+    stopMotor(RIGHT);
+    return {0, 0};
+  }
+
+  error = CalculateError(targetWallDistance, rightDistance);
+
+  unsigned long currentTime = millis();
+  float dt = CalculateDT(currentTime, distancePrevTime);
+  distancePrevTime = currentTime;
+  float output = CalculateLaserPID(error, dt);
+
+  int leftSpeed = baseSpeed + output;
+  int rightSpeed = baseSpeed - output;
+
+
+  leftSpeed = constrain(leftSpeed, 0, 180);
+  rightSpeed = constrain(rightSpeed, 0, 180);
+
+
+  return {leftSpeed, rightSpeed};
+}
+
+
+// ==================== PID Functions =================
+float CalculateEncoderPID(float error, float dt) {
+
+    // PID
+    P_Encoder = error * Kp_Encoder;
+    I_Encoder += dt * Ki_Encoder * error;
+    I_Encoder = constrain(I_Encoder, -maxPID_Out, maxPID_Out);
+    D_Encoder = ((error - prevError) / dt) * Kd_Encoder;
+
+    prevError = error;
+
+    return constrain(P_Encoder + I_Encoder + D_Encoder, -maxPID_Out, maxPID_Out);    
+    
+}
+
+float CalculateTurnPID(float error, float dt)
+{
+
+  P_mpu = Kp_turn * error;
+  I_mpu += error * dt;
+  I_mpu = constrain(I_mpu, -TURN_INTEGRAL_LIMIT, TURN_INTEGRAL_LIMIT);
+  D_mpu = Kd_turn * ((error - prevError) / dt);
+
+  prevError = error;
+
+  // PID Output
+  float output = P_mpu + (Ki_turn * I_mpu) + D_mpu;
+
+  // Limit Output
+  output = constrain(output, -TURN_SPEED_MAX, TURN_SPEED_MAX);
+
+  return output;
+}
+
+
+
+float CalculateLaserPID(float error, float dt)
+{
+
+  P_laser = Kp_distance * error;
+  I_laser += error * dt * Ki_distance;
+  I_laser = constrain(I_laser, -distance_INTEGRAL_LIMIT, distance_INTEGRAL_LIMIT);
+  D_laser = Kd_distance * ((error - distancePrevError) / dt);
+
+  distancePrevError = error;
+
+  // PID output
+  float output = P_laser + I_laser + D_laser;
+
+  output = constrain(output, -distance_PID_MAX, distance_PID_MAX);
+
+  return output;
+}
+
+
+
+// ==================== Wall Follower ================
 //left wall follower algorithm
 void WallFollower() {
   while (true) {
     float leftDistance = ReadLeftDistance();    //measure left distance
     float rightDistance = ReadRightDistance();  // measure right distance
 
-    bool isfrontWall = IsFrontWallDetected()();  // see the front size if there is a wall or not
+    bool isfrontWall = IsFrontWallDetected();  // see the front size if there is a wall or not
       
     // priority for front
     if(!isfrontWall)
@@ -844,64 +1100,6 @@ void WallFollower() {
 }
 
 
-// ==================== Functions =================
-long CalculateTargetTicks(float targetDistance_cm)
-{
-  float ticksPerRev = encoderPolesCount * 2 * motorGearRatio;
-  float wheelCircumference_cm = PI * wheelDiameter;
-
-  return (long)((targetDistance_cm / wheelCircumference_cm) * ticksPerRev);
-}
-
-void ResetEncoders()
-{
-  leftEncoderCount = 0;
-  rightEncoderCount = 0;
-}
-
-
-long GetAverageEncoderTicks() {
-  return (leftEncoderCount + rightEncoderCount) / 2;
-}
-
-float CalculateError(float desiredValue, float measuredValue)
-{
-  return (desiredValue - measuredValue);
-}
-
-float UpdateEncoderPID() {
-
-  CalculateError(leftEncoderCount, rightEncoderCount);
-
-  currentTime = millis();
-
-  float dt = currentTime - prevTime;
-
-    if (dt <= 0)
-      dt = 1; 
-
-    // PID
-    P_Encoder = error * Kp_Encoder;
-    I_Encoder += dt * Ki_Encoder * error;
-    I_Encoder = constrain(I_Encoder, -maxPID_Out, maxPID_Out);
-    D_Encoder = ((error - prevError) / dt) * Kd_Encoder;
-
-    prevError = error;
-    prevTime = currentTime;
-
-    return constrain(P_Encoder + I_Encoder + D_Encoder, -maxPID_Out, maxPID_Out);    
-    
-}
-
-float UpdateTurnPID()
-{
-
-
-
-
-
-}
-
 
 // ==================== Maze Flood-Fill (FirstRun) ================
 // Ported from your API-based micromouse logic. Same algorithm/idea,
@@ -917,7 +1115,7 @@ void MazeLog(const String &text)
 // semantics: true = wall detected, false = free.
 bool WallFrontPresent()
 {
-  return IsFrontWallDetected()();
+  return IsFrontWallDetected();
 }
 
 
@@ -1224,5 +1422,106 @@ void FirstRun()
             else
                 MoveToPrevCell(x, y);
         }
+    }
+}
+
+
+
+// ==================== Maze Flood-Fill (SecondRun) ================
+void SecondRun()
+{
+    int beg_x = N - 1, beg_y = 0;
+
+    std::vector<std::vector<std::pair<int, int>>> bfsParent(N, std::vector<std::pair<int, int>>(N, {-1, -1}));
+    std::vector<std::vector<bool>> visited(N, std::vector<bool>(N, false));
+
+    std::queue<std::pair<int, int>> q;
+    q.push({beg_x, beg_y});
+    visited[beg_x][beg_y] = true;
+
+    // Center goal cells, computed generically from N (works for any odd N = 2*cells - 1)
+    int half = (N - 1) / 2;
+    std::vector<std::pair<int, int>> goals = {
+        {half - 1, half - 1}, {half - 1, half + 1},
+        {half + 1, half - 1}, {half + 1, half + 1}
+    };
+
+    std::pair<int, int> goalCell = {-1, -1};
+    bool found = false;
+
+    while (!q.empty() && !found)
+    {
+        int x = q.front().first;
+        int y = q.front().second;
+        q.pop();
+
+        for (int k = 0; k < 4 && !found; ++k)
+        {
+            int xx = x + dx[k];
+            int yy = y + dy[k];
+
+            if (xx < 0 || yy < 0 || xx >= N || yy >= N) continue;
+            if (visited[xx][yy]) continue;
+
+            bool open = false;
+            if (GlobalDirection[k] == 'R')      open = (maze[x][y + 1] == 1);
+            else if (GlobalDirection[k] == 'L') open = (maze[x][y - 1] == 1);
+            else if (GlobalDirection[k] == 'U') open = (maze[x - 1][y] == 1);
+            else if (GlobalDirection[k] == 'D') open = (maze[x + 1][y] == 1);
+
+            if (open)
+            {
+                visited[xx][yy] = true;
+                bfsParent[xx][yy] = {x, y};
+                q.push({xx, yy});
+
+                for (auto &g : goals)
+                {
+                    if (xx == g.first && yy == g.second)
+                    {
+                        found = true;
+                        goalCell = {xx, yy};
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    if (!found)
+    {
+        MazeLog("SecondRun: no path to goal found");
+        return;
+    }
+
+    // Reconstruct path start -> goal
+    std::vector<std::pair<int, int>> path;
+    path.push_back(goalCell);
+    std::pair<int, int> cur = goalCell;
+
+    while (!(cur.first == beg_x && cur.second == beg_y))
+    {
+        cur = bfsParent[cur.first][cur.second];
+        path.push_back(cur);
+    }
+    std::reverse(path.begin(), path.end());
+
+    MazeLog("SecondRun: shortest path length = " + String((int)path.size() - 1));
+
+    // Drive the robot along the path
+    for (size_t i = 1; i < path.size(); ++i)
+    {
+        int x0 = path[i - 1].first, y0 = path[i - 1].second;
+        int x1 = path[i].first,     y1 = path[i].second;
+
+        char dir;
+        if (x1 == x0 - 2 && y1 == y0)      dir = 'U';
+        else if (x1 == x0 + 2 && y1 == y0) dir = 'D';
+        else if (y1 == y0 + 2 && x1 == x0) dir = 'R';
+        else if (y1 == y0 - 2 && x1 == x0) dir = 'L';
+        else continue; // shouldn't happen with a valid BFS path
+
+        CorrectDirection(dir);
+        MoveStraight(Step);
     }
 }
