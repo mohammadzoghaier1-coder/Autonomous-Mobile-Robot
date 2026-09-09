@@ -1,6 +1,7 @@
 // Cell Size (24*24)
 // Robot Chassis Diameter 122mm
 // Wheel Diameter 46mm
+// ==================== Libraries ================
 #include "MPU6050_6Axis_MotionApps20.h"
 #include <VL53L0X.h>
 #include "I2Cdev.h"
@@ -270,14 +271,44 @@ void setup() {
   Serial.begin(115200);
   Wire.begin();
 
-  // Initializing IR
-  pinMode(IR_pin, INPUT);
+  MotorInit();
+  EncoderInit();
+  LaserInit();
+  IR_Init();
+  LED_Init();
+  InitializeMPU_6050();
+  InitializeVL53();
 
-  // Initializing LED
-  pinMode(LED_PIN, OUTPUT);
-  digitalWrite(LED_PIN, LOW);
+  // intterrupt pin
+  pinMode(Interrupt_Pin, INPUT);
+  attachInterrupt(digitalPinToInterrupt(Interrupt_Pin), DMPDataReady, RISING);
+
+  // Set Initial Direction
+  CurrentDirection = FORWARD_D;
+
+  // Run the maze flood-fill exploration once
+  MazeLog("Running...");
+  MazeLog("Flood Fill Algorithm");
+  // FirstRun();
+  
+  // delay(5000);
+  // SecondRun();
+}
+
+// ==================== Loop Function ================
+void loop() {
+  WriteLeftDistance(ReadLeftDistance());
+  WriteRightDistance(ReadRightDistance());
+
+  
+  WallFollower();
+}
 
 
+// ==================== Initializing Functions ================
+
+void MotorInit()
+{
   // Initializing motors
   pinMode(IN1_L, OUTPUT);
   pinMode(IN2_L, OUTPUT);
@@ -293,7 +324,11 @@ void setup() {
 
   stopMotor(LEFT);
   stopMotor(RIGHT);
+}
 
+
+void EncoderInit()
+{
   // Initializing ENCODER
   pinMode(leftEncoderC1, INPUT);
   pinMode(leftEncoderC2, INPUT);
@@ -306,43 +341,32 @@ void setup() {
 
   attachInterrupt(digitalPinToInterrupt(rightEncoderC1), rightEncoderISR_C1, CHANGE);
   attachInterrupt(digitalPinToInterrupt(rightEncoderC2), rightEncoderISR_C2, CHANGE);
+}
 
+
+void LaserInit()
+{
   // Lazer XSHUT PINS
   pinMode(LEFT_XSHUT_PIN, OUTPUT);
   pinMode(RIGHT_XSHUT_PIN, OUTPUT);
-
-  // Initializing Sensors
-  InitializeMPU_6050();
-  InitializeVL53();
-
-  // intterrupt pin
-  pinMode(Interrupt_Pin, INPUT);
-
-  attachInterrupt(digitalPinToInterrupt(Interrupt_Pin), DMPDataReady, RISING);
-
-  // Set Initial Direction
-  CurrentDirection = FORWARD_D;
-
-  // Run the maze flood-fill exploration once
-  MazeLog("Running...");
-  MazeLog("Flood Fill Algorithm");
-  FirstRun();
-  
-  delay(5000);
-  SecondRun();
-}
-
-// ==================== Loop Function ================
-void loop() {
-  WriteLeftDistance(ReadLeftDistance());
-  WriteRightDistance(ReadRightDistance());
-
-
-  // WallFollower();
 }
 
 
-// ==================== Initializing Functions ================
+void IR_Init()
+{
+  // Initializing IR
+  pinMode(IR_pin, INPUT);
+}
+
+
+void LED_Init()
+{
+  // Initializing LED
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, LOW);
+}
+
+
 // Initialize MPU6050
 void InitializeMPU_6050() {
 #if I2CDEV_IMPLEMENTATION == I2CDEV_ARDUINO_WIRE
@@ -423,7 +447,7 @@ void InitializeVL53() {
 
   // Start LEFT sensor
   digitalWrite(LEFT_XSHUT_PIN, HIGH);
-  delay(50);
+  delay(100);
 
   if (!leftSensor.init()) {
     Serial.println("LEFT sensor failed!");
@@ -436,7 +460,7 @@ void InitializeVL53() {
 
   // Start RIGHT sensor
   digitalWrite(RIGHT_XSHUT_PIN, HIGH);
-  delay(50);
+  delay(100);
 
   if (!rightSensor.init()) {
     Serial.println("RIGHT sensor failed!");
@@ -679,9 +703,6 @@ void MoveStraight(float targetDistance_cm) {
     prevTime = currentTime;
     
     float out = CalculateEncoderPID(error, dt);
-    
-
-    
 
     // Motor Speed
     MotorForward((int)(baseSpeed - out), LEFT);
@@ -1078,23 +1099,23 @@ void WallFollower() {
     // priority for front
     if(!isfrontWall)
     {
-      MoveStraight(Step);
+      LaserCoordinator();
     }
     //right
     else if (rightDistance > WALL_DETECTED) {
       TurnRight90();
-      MoveStraight(Step);
+      LaserCoordinator();
     }
     // left
     else if (leftDistance > WALL_DETECTED) {
       TurnLeft90();
-      MoveStraight(Step);
+      LaserCoordinator();
     }
     //back
     else {
       TurnRight90();
       TurnRight90();
-      MoveStraight(Step);
+      LaserCoordinator();
     }
   }
 }
