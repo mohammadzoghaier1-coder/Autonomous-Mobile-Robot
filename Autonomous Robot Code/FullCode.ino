@@ -8,6 +8,7 @@
 
 #include <vector>
 #include <stack>
+#include<queue>
 #include <utility>
 #include <algorithm>
 
@@ -1418,5 +1419,106 @@ void FirstRun()
             else
                 MoveToPrevCell(x, y);
         }
+    }
+}
+
+
+
+// ==================== Maze Flood-Fill (SecondRun) ================
+void SecondRun()
+{
+    int beg_x = N - 1, beg_y = 0;
+
+    std::vector<std::vector<std::pair<int, int>>> bfsParent(N, std::vector<std::pair<int, int>>(N, {-1, -1}));
+    std::vector<std::vector<bool>> visited(N, std::vector<bool>(N, false));
+
+    std::queue<std::pair<int, int>> q;
+    q.push({beg_x, beg_y});
+    visited[beg_x][beg_y] = true;
+
+    // Center goal cells, computed generically from N (works for any odd N = 2*cells - 1)
+    int half = (N - 1) / 2;
+    std::vector<std::pair<int, int>> goals = {
+        {half - 1, half - 1}, {half - 1, half + 1},
+        {half + 1, half - 1}, {half + 1, half + 1}
+    };
+
+    std::pair<int, int> goalCell = {-1, -1};
+    bool found = false;
+
+    while (!q.empty() && !found)
+    {
+        int x = q.front().first;
+        int y = q.front().second;
+        q.pop();
+
+        for (int k = 0; k < 4 && !found; ++k)
+        {
+            int xx = x + dx[k];
+            int yy = y + dy[k];
+
+            if (xx < 0 || yy < 0 || xx >= N || yy >= N) continue;
+            if (visited[xx][yy]) continue;
+
+            bool open = false;
+            if (GlobalDirection[k] == 'R')      open = (maze[x][y + 1] == 1);
+            else if (GlobalDirection[k] == 'L') open = (maze[x][y - 1] == 1);
+            else if (GlobalDirection[k] == 'U') open = (maze[x - 1][y] == 1);
+            else if (GlobalDirection[k] == 'D') open = (maze[x + 1][y] == 1);
+
+            if (open)
+            {
+                visited[xx][yy] = true;
+                bfsParent[xx][yy] = {x, y};
+                q.push({xx, yy});
+
+                for (auto &g : goals)
+                {
+                    if (xx == g.first && yy == g.second)
+                    {
+                        found = true;
+                        goalCell = {xx, yy};
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    if (!found)
+    {
+        MazeLog("SecondRun: no path to goal found");
+        return;
+    }
+
+    // Reconstruct path start -> goal
+    std::vector<std::pair<int, int>> path;
+    path.push_back(goalCell);
+    std::pair<int, int> cur = goalCell;
+
+    while (!(cur.first == beg_x && cur.second == beg_y))
+    {
+        cur = bfsParent[cur.first][cur.second];
+        path.push_back(cur);
+    }
+    std::reverse(path.begin(), path.end());
+
+    MazeLog("SecondRun: shortest path length = " + String((int)path.size() - 1));
+
+    // Drive the robot along the path
+    for (size_t i = 1; i < path.size(); ++i)
+    {
+        int x0 = path[i - 1].first, y0 = path[i - 1].second;
+        int x1 = path[i].first,     y1 = path[i].second;
+
+        char dir;
+        if (x1 == x0 - 2 && y1 == y0)      dir = 'U';
+        else if (x1 == x0 + 2 && y1 == y0) dir = 'D';
+        else if (y1 == y0 + 2 && x1 == x0) dir = 'R';
+        else if (y1 == y0 - 2 && x1 == x0) dir = 'L';
+        else continue; // shouldn't happen with a valid BFS path
+
+        CorrectDirection(dir);
+        MoveStraight(Step);
     }
 }
