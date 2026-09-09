@@ -239,6 +239,7 @@ void IRAM_ATTR leftEncoderISR_C2() {
   }
 }
 
+
 // Right Encoder
 void IRAM_ATTR rightEncoderISR_C1() {
   bool a = digitalRead(rightEncoderC1);
@@ -588,24 +589,12 @@ void WriteLeftDistance(float distance)
 
 }
 
+
 void WriteRightDistance(float distance)
 {
   Serial.print(" | Right Laser: ");
   Serial.print(distance, 2);
   Serial.println("cm");
-}
-
-
-
-// Normalize Angle
-float NormalizeAngle(float angle) {
-  if (angle > 180)
-    angle -= 360;
-
-  if (angle < -180)
-    angle += 360;
-
-  return angle;
 }
 
 
@@ -626,6 +615,7 @@ void TurnRight90() {
   // Update Current Direction
   CurrentDirection = newDirection;
 }
+
 
 void TurnLeft90() {
 
@@ -832,78 +822,8 @@ void LaserCoordinator()
 }
 
 
-bool IsFrontWallDetected() {
-  return digitalRead(IR_pin) == LOW;
-}
-
-void DetectedFront() {
-
-  while (IsFrontWallDetected()) {
-    stopMotor(LEFT);
-    stopMotor(RIGHT);
-
-    delay(100);
-  }
-}
-
-
-//left wall follower algorithm
-void WallFollower() {
-  while (true) {
-    float leftDistance = ReadLeftDistance();    //measure left distance
-    float rightDistance = ReadRightDistance();  // measure right distance
-
-    bool isfrontWall = IsFrontWallDetected();  // see the front size if there is a wall or not
-      
-    // priority for front
-    if(!isfrontWall)
-    {
-      MoveStraight(Step);
-    }
-    //right
-    else if (rightDistance > WALL_DETECTED) {
-      TurnRight90();
-      MoveStraight(Step);
-    }
-    // left
-    else if (leftDistance > WALL_DETECTED) {
-      TurnLeft90();
-      MoveStraight(Step);
-    }
-    //back
-    else {
-      TurnRight90();
-      TurnRight90();
-      MoveStraight(Step);
-    }
-  }
-}
-
 
 // ==================== Functions =================
-long CalculateTargetTicks(float targetDistance_cm)
-{
-  float ticksPerRev = encoderPolesCount * 2 * motorGearRatio;
-  float wheelCircumference_cm = PI * wheelDiameter;
-
-  return (long)((targetDistance_cm / wheelCircumference_cm) * ticksPerRev);
-}
-
-void ResetEncoders()
-{
-  leftEncoderCount = 0;
-  rightEncoderCount = 0;
-}
-
-long GetAverageEncoderTicks() {
-  return (leftEncoderCount + rightEncoderCount) / 2;
-}
-
-float CalculateError(float desiredValue, float measuredValue)
-{
-  return (desiredValue - measuredValue);
-}
-
 // Calculate Delta Time
 float CalculateDT(unsigned long currentTime, unsigned long prevTime)
 {
@@ -916,6 +836,22 @@ float CalculateDT(unsigned long currentTime, unsigned long prevTime)
 
   return dt;
 }
+
+
+long CalculateTargetTicks(float targetDistance_cm)
+{
+  float ticksPerRev = encoderPolesCount * 2 * motorGearRatio;
+  float wheelCircumference_cm = PI * wheelDiameter;
+
+  return (long)((targetDistance_cm / wheelCircumference_cm) * ticksPerRev);
+}
+
+
+float CalculateError(float desiredValue, float measuredValue)
+{
+  return (desiredValue - measuredValue);
+}
+
 
 bool TargetDistance()
 {
@@ -935,8 +871,49 @@ bool TargetDistance()
 
 }
 
-// ==================== Laser Error Functions ====================
 
+// Normalize Angle
+float NormalizeAngle(float angle) {
+  if (angle > 180)
+    angle -= 360;
+
+  if (angle < -180)
+    angle += 360;
+
+  return angle;
+}
+
+
+void DetectedFront() {
+
+  while (IsFrontWallDetected()) {
+    stopMotor(LEFT);
+    stopMotor(RIGHT);
+
+    delay(100);
+  }
+}
+
+
+void ResetEncoders()
+{
+  leftEncoderCount = 0;
+  rightEncoderCount = 0;
+}
+
+
+long GetAverageEncoderTicks() {
+  return (leftEncoderCount + rightEncoderCount) / 2;
+}
+
+
+bool IsFrontWallDetected() {
+  return digitalRead(IR_pin) == LOW;
+}
+
+
+
+// ==================== Laser Error Functions ====================
 OutError OutputErrorForlaser()
 {
   float leftDistance = ReadLeftDistance();
@@ -1082,6 +1059,42 @@ float CalculateLaserPID(float error, float dt)
 
   return output;
 }
+
+
+
+// ==================== Wall Follower ================
+//left wall follower algorithm
+void WallFollower() {
+  while (true) {
+    float leftDistance = ReadLeftDistance();    //measure left distance
+    float rightDistance = ReadRightDistance();  // measure right distance
+
+    bool isfrontWall = IsFrontWallDetected();  // see the front size if there is a wall or not
+      
+    // priority for front
+    if(!isfrontWall)
+    {
+      MoveStraight(Step);
+    }
+    //right
+    else if (rightDistance > WALL_DETECTED) {
+      TurnRight90();
+      MoveStraight(Step);
+    }
+    // left
+    else if (leftDistance > WALL_DETECTED) {
+      TurnLeft90();
+      MoveStraight(Step);
+    }
+    //back
+    else {
+      TurnRight90();
+      TurnRight90();
+      MoveStraight(Step);
+    }
+  }
+}
+
 
 
 // ==================== Maze Flood-Fill (FirstRun) ================
