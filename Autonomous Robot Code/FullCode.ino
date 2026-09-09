@@ -597,7 +597,7 @@ void WriteRightDistance(float distance)
 
 
 // Normalize Angle
-float normalizeAngle(float angle) {
+float NormalizeAngle(float angle) {
   if (angle > 180)
     angle -= 360;
 
@@ -651,11 +651,11 @@ void MoveStraight(float targetDistance_cm) {
   while (true) {
 
     // DEBUG ENCODERS
-    if (IsfrontWallDetected()) {
+    if (IsFrontWallDetected()()) {
       stopMotor(LEFT);
       stopMotor(RIGHT);
 
-      while (IsfrontWallDetected()) {
+      while (IsFrontWallDetected()()) {
         TurnRight90();
 
         delay(50);
@@ -698,7 +698,7 @@ void TurnToYaw(float targetYaw) {
     UpdateMPU_6050();
 
     // Calculate Error
-    float error = normalizeAngle(targetYaw - yawAngle);
+    float error = NormalizeAngle(targetYaw - yawAngle);
 
     // // SERIAL DEBUG
     // Serial.print("Yaw: ");
@@ -720,7 +720,7 @@ void TurnToYaw(float targetYaw) {
       // Take another reading
       UpdateMPU_6050();
 
-      error = normalizeAngle(targetYaw - yawAngle);
+      error = NormalizeAngle(targetYaw - yawAngle);
 
       if (abs(error) <= TURN_TOLERANCE) {
         break;
@@ -796,14 +796,13 @@ void TurnToYaw(float targetYaw) {
   delay(100);
 }
 
-
-bool IsfrontWallDetected() {
+bool IsFrontWallDetected()() {
   return digitalRead(IR_pin) == LOW;
 }
 
 void DetectedFront() {
 
-  while (IsfrontWallDetected) {
+  while (IsFrontWallDetected()) {
     stopMotor(LEFT);
     stopMotor(RIGHT);
 
@@ -818,7 +817,7 @@ void WallFollower() {
     float leftDistance = ReadLeftDistance();    //measure left distance
     float rightDistance = ReadRightDistance();  // measure right distance
 
-    bool isfrontWall = IsfrontWallDetected();  // see the front size if there is a wall or not
+    bool isfrontWall = IsFrontWallDetected()();  // see the front size if there is a wall or not
       
     // priority for front
     if(!isfrontWall)
@@ -918,7 +917,7 @@ void MazeLog(const String &text)
 // semantics: true = wall detected, false = free.
 bool WallFrontPresent()
 {
-  return IsfrontWallDetected();
+  return IsFrontWallDetected()();
 }
 
 
