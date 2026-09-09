@@ -327,6 +327,9 @@ void setup() {
   MazeLog("Running...");
   MazeLog("Flood Fill Algorithm");
   FirstRun();
+  
+  delay(5000);
+  SecondRun();
 }
 
 // ==================== Loop Function ================
