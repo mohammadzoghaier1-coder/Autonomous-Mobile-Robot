@@ -212,7 +212,6 @@ void mpu_init();                              // initialize the MPU6050 and DMP
 void lasers_init();                           // initialize both laser sensors
 // DMPDataReady is used to mark that MPU data is ready
 void DMPDataReady();                          // handle MPU data-ready interrupt
-void WallISR();                               // handle front-wall interrupt
 void InitializeVL53();                        // kept as compatibility wrapper
 void InitializeMPU_6050();                    // kept as compatibility wrapper
 // Blink is used to blink the onboard LED
@@ -398,7 +397,6 @@ void encoders_init()
   pinMode(rightEncoderC1, INPUT);
   pinMode(rightEncoderC2, INPUT);
 
-  attachInterrupt(digitalPinToInterrupt(ir_pin), WallISR, FALLING);
 
   attachInterrupt(digitalPinToInterrupt(leftEncoderC1), leftEncoderISR_C1, CHANGE);
   attachInterrupt(digitalPinToInterrupt(leftEncoderC2), leftEncoderISR_C2, CHANGE);
