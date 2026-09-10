@@ -12,6 +12,7 @@
 #include<queue>
 #include <utility>
 #include <algorithm>
+#include "BluetoothSerial.h"
 
 // ==================== Pins ================
 // Left Motor
@@ -55,11 +56,13 @@ float motorGearRatio = 29;
 float wheelDiameter = 4.6;  //cm
 float baseSpeed = 125;
 
-const int Step = 12;
+const int Step = 20;
 const int WALL_DETECTED = 8;
 
 float targetDistance_cm = Step;
-float targetWallDistance = 12;
+float targetWallDistance = 6;
+float leftWallDistance = 0;
+float rightWallDistance = 0;
 
 // Lazers Addresses
 const uint8_t LEFT_SENSOR_ADDRESS = 0x30;
@@ -197,6 +200,14 @@ const float TURN_MIN_EFFECTIVE_SPEED = 125;
 // Anti-windup limit
 const float TURN_INTEGRAL_LIMIT = 10.0;
 
+
+// Movement PID
+float Kp_moveDistance = 0.4;
+float Kd_moveDistance = 0.1;
+
+const float DISTANCE_TOLERANCE = 5.0;
+const int MIN_MOVE_SPEED = 80;
+
 // ==================== Maze Flood-Fill Variables ================
 // enter n : n = (maze length )^2 - 1
 // test for 16*16 maze
@@ -287,21 +298,40 @@ void setup() {
   CurrentDirection = FORWARD_D;
 
   // Run the maze flood-fill exploration once
-  MazeLog("Running...");
-  MazeLog("Flood Fill Algorithm");
-  // FirstRun();
+  // MazeLog("Running...");
+  // MazeLog("Flood Fill Algorithm");
+  //  FirstRun();
   
-  // delay(5000);
+  // MazeLog("Finished Scanning the maze...");
+  // TurnRight90();
+  // TurnRight90();
+  // up = 1;
+  // down = 0;
+  // MazeLog("Starting Second Run....");
+  // delay(4000);
   // SecondRun();
+  
 }
 
 // ==================== Loop Function ================
 void loop() {
-  WriteLeftDistance(ReadLeftDistance());
-  WriteRightDistance(ReadRightDistance());
+  // LaserCoordinator();
 
-  
-  WallFollower();
+  //  WriteLeftDistance(ReadLeftDistance());
+  //  WriteRightDistance(ReadRightDistance());
+
+  Serial.print("LEFT: ");
+  Serial.print(ReadLeftDistance());
+  Serial.print("     | Right: ");
+  Serial.println(ReadRightDistance());
+  Serial.println("=================================================");
+  OutputErrorForLeftWall();
+  Serial.print("error LEFT:    ");
+  Serial.println(error);
+  OutputErrorForRightWall();
+  Serial.print("error RIGHT:    ");
+  Serial.println(error);
+  // WallFollower();
 }
 
 
@@ -322,8 +352,8 @@ void MotorInit()
   analogWriteResolution(ENA_L, 8);
   analogWriteFrequency(ENA_L, 5000);
 
-  stopMotor(LEFT);
-  stopMotor(RIGHT);
+  StopMotor(LEFT);
+  StopMotor(RIGHT);
 }
 
 
@@ -555,7 +585,7 @@ void MotorBackward(int speed, Motor motor) {
 
 
 // Motor Control
-void stopMotor(Motor motor) {
+void StopMotor(Motor motor) {
 
   if (motor == LEFT) {
 
@@ -608,6 +638,13 @@ void ReadRightEncoder()
 }
 
 
+void UpdateLasers()
+{
+  rightWallDistance = leftSensor.readRangeContinuousMillimeters();
+  leftWallDistance = rightSensor.readRangeContinuousMillimeters();
+}
+
+
 // ==================== Write Functions =================
 void WriteLeftDistance(float distance)
 {
@@ -630,8 +667,8 @@ void WriteRightDistance(float distance)
 // ==================== Control Functions =================
 void TurnRight90() {
   // Stop before starting the turn
-  stopMotor(LEFT);
-  stopMotor(RIGHT);
+  StopMotor(LEFT);
+  StopMotor(RIGHT);
   delay(100);
 
   // Find new Direction
@@ -647,8 +684,8 @@ void TurnRight90() {
 
 void TurnLeft90() {
 
-  stopMotor(LEFT);
-  stopMotor(RIGHT);
+  StopMotor(LEFT);
+  StopMotor(RIGHT);
   delay(100);
 
   LocalDirectionStates newDirection = (LocalDirectionStates)((CurrentDirection + 3) % 4);
@@ -658,23 +695,43 @@ void TurnLeft90() {
 }
 
 
-void MoveStraight(float targetDistance_cm) {
+void MoveStraight(float targetDistance_cm)
+{
+  // Correct robot orientation before moving
+  CorrectRotation();
+
+  // Correct robot offset from the walls
+  CorrectOffset();
+
+  // Reset encoders
   ResetEncoders();
 
+  // Reset Encoder PID
   I_Encoder = 0;
   prevError = 0;
   prevTime = millis();
 
-  while (true) {
+  // Reset Distance PID
+  distancePrevError = 0;
+  distancePrevTime = millis();
 
-    // DEBUG ENCODERS
-    if (IsFrontWallDetected()) {
-      stopMotor(LEFT);
-      stopMotor(RIGHT);
+  // Calculate target encoder ticks
+  long targetTicks = CalculateTargetTicks(targetDistance_cm);
 
-      while (IsFrontWallDetected()) {
+  // Prevent D-term spike on first iteration
+  distancePrevError = targetTicks;
+
+  while (true)
+  {
+    // Check front wall
+    if (IsFrontWallDetected())
+    {
+      StopMotor(LEFT);
+      StopMotor(RIGHT);
+
+      while (IsFrontWallDetected())
+      {
         TurnRight90();
-
         delay(50);
       }
 
@@ -682,31 +739,93 @@ void MoveStraight(float targetDistance_cm) {
       I_Encoder = 0;
       prevError = 0;
       prevTime = millis();
+
+      // Reset Distance PID after turning
+      distancePrevError = 0;
+      distancePrevTime = millis();
+      distancePrevError = targetTicks;
     }
 
-  
-    float targetTicks = CalculateTargetTicks(targetDistance_cm);
+    // Current average encoder position
+    long avgTicks = GetAverageEncoderTicks();
 
-    if (GetAverageEncoderTicks() >= targetTicks) {
-      stopMotor(LEFT);
-      stopMotor(RIGHT);
+    // Remaining distance
+    float distanceError = targetTicks - avgTicks;
+
+    // Check if target distance is reached
+    if (distanceError <= DISTANCE_TOLERANCE)
+    {
+      StopMotor(LEFT);
+      StopMotor(RIGHT);
       return;
     }
 
-    // Error
-    float error = CalculateError(rightEncoderCount, leftEncoderCount);
+    // Calculate Distance PID timing
+    unsigned long currentDistanceTime = millis();
 
-    // Calculate time difference
+    float dtDistance = CalculateDT(
+      currentDistanceTime,
+      distancePrevTime
+    );
+
+    distancePrevTime = currentDistanceTime;
+
+    // Calculate distance derivative
+    float distanceDerivative =
+      (distanceError - distancePrevError) / dtDistance;
+
+    // Calculate distance controller output
+    float distanceOutput =
+      Kp_moveDistance * distanceError +
+      Kd_moveDistance * distanceDerivative;
+
+    distancePrevError = distanceError;
+
+    // Convert distance output into motor speed
+    float currentSpeed = constrain(
+      distanceOutput,
+      MIN_MOVE_SPEED,
+      baseSpeed
+    );
+
+    // Calculate encoder error
+    float encoderError =
+      CalculateError(
+        rightEncoderCount,
+        leftEncoderCount
+      );
+
+    // Calculate Encoder PID timing
     unsigned long currentTime = millis();
-    float dt = CalculateDT(currentTime, prevTime);
+
+    float dt = CalculateDT(
+      currentTime,
+      prevTime
+    );
 
     prevTime = currentTime;
-    
-    float out = CalculateEncoderPID(error, dt);
 
-    // Motor Speed
-    MotorForward((int)(baseSpeed - out), LEFT);
-    MotorForward((int)(baseSpeed + out), RIGHT);
+    // Calculate straight correction
+    float straightCorrection =
+      CalculateEncoderPID(
+        encoderError,
+        dt
+      );
+
+    // Calculate motor speeds
+    int leftSpeed =
+      (int)(currentSpeed - straightCorrection);
+
+    int rightSpeed =
+      (int)(currentSpeed + straightCorrection);
+
+    // Limit motor speeds
+    leftSpeed = constrain(leftSpeed, 0, 180);
+    rightSpeed = constrain(rightSpeed, 0, 180);
+
+    // Move forward
+    MotorForward(leftSpeed, LEFT);
+    MotorForward(rightSpeed, RIGHT);
   }
 }
 
@@ -730,8 +849,8 @@ void TurnToYaw(float targetYaw) {
     // Check if we reached target
     if (abs(error) <= TURN_TOLERANCE) {
 
-      stopMotor(LEFT);
-      stopMotor(RIGHT);
+      StopMotor(LEFT);
+      StopMotor(RIGHT);
       delay(50);
 
       // Take another reading
@@ -759,14 +878,14 @@ void TurnToYaw(float targetYaw) {
     float output = CalculateTurnPID(error, dt);
 
     // Debugging
-    Serial.print("Yaw: ");
-    Serial.print(yawAngle, 2);
+    // Serial.print("Yaw: ");
+    // Serial.print(yawAngle, 2);
 
-    Serial.print(" | Error: ");
-    Serial.print(error, 2);
+    // Serial.print(" | Error: ");
+    // Serial.print(error, 2);
 
-    Serial.print(" | Output: ");
-    Serial.println(output, 2);
+    // Serial.print(" | Output: ");
+    // Serial.println(output, 2);
 
     // Minimum effective speed
     if (abs(output) < TURN_MIN_EFFECTIVE_SPEED) {
@@ -791,8 +910,8 @@ void TurnToYaw(float targetYaw) {
   // Turn finished
   Blink(1);
 
-  stopMotor(LEFT);
-  stopMotor(RIGHT);
+  StopMotor(LEFT);
+  StopMotor(RIGHT);
 
   delay(100);
 }
@@ -848,6 +967,137 @@ void LaserCoordinator()
 
 
 
+// ==================== Accuracy Improvement Functions ====================
+void CorrectRotation()
+{
+  StopMotor(LEFT);
+  StopMotor(RIGHT);
+
+  delay(100);
+
+  TurnToYaw(directionYaw[CurrentDirection]);
+}
+
+
+void CorrectOffset()
+{
+  ResetEncoders();
+
+  UpdateLasers();
+
+  // Left wall
+  if (leftWallDistance < 60)
+  {
+    if (leftWallDistance < 40)
+    {
+      bool goingForward = true;
+
+      while (leftWallDistance < 50)
+      {
+        UpdateLasers();
+
+        long avgTicks = GetAverageEncoderTicks();
+
+        if (avgTicks < 100 && goingForward)
+        {
+          MotorForward(135, LEFT);
+          MotorForward(110, RIGHT);
+        }
+        else if (avgTicks > 0)
+        {
+          if (goingForward)
+            CorrectRotation();
+
+          goingForward = false;
+
+          MotorBackward(140, LEFT);
+          MotorBackward(110, RIGHT);
+        }
+        else
+        {
+          CorrectRotation();
+          goingForward = true;
+        }
+      }
+
+      while (GetAverageEncoderTicks() > 0)
+      {
+        MotorBackward(105, LEFT);
+        MotorBackward(105, RIGHT);
+      }
+
+      while (GetAverageEncoderTicks() < 0)
+      {
+        MotorForward(110, LEFT);
+        MotorForward(110, RIGHT);
+      }
+
+      CorrectRotation();
+
+      StopMotor(LEFT);
+      StopMotor(RIGHT);
+    }
+  }
+  // Right wall
+  else
+  {
+    float rightDistance = ReadRightDistance();
+
+    if (rightDistance <= WALL_DETECTED && rightDistance < 40)
+    {
+      bool goingForward = true;
+
+      while (rightDistance < 60)
+      {
+        UpdateLasers();
+
+        rightDistance = ReadRightDistance();
+
+        long avgTicks = GetAverageEncoderTicks();
+
+        if (avgTicks < 100 && goingForward)
+        {
+          MotorForward(110, LEFT);
+          MotorForward(160, RIGHT);
+        }
+        else if (avgTicks > 0)
+        {
+          if (goingForward)
+            CorrectRotation();
+
+          goingForward = false;
+
+          MotorBackward(110, LEFT);
+          MotorBackward(140, RIGHT);
+        }
+        else
+        {
+          CorrectRotation();
+          goingForward = true;
+        }
+      }
+
+      while (GetAverageEncoderTicks() > 0)
+      {
+        MotorBackward(105, LEFT);
+        MotorBackward(105, RIGHT);
+      }
+
+      while (GetAverageEncoderTicks() < 0)
+      {
+        MotorForward(110, LEFT);
+        MotorForward(110, RIGHT);
+      }
+
+      CorrectRotation();
+
+      StopMotor(LEFT);
+      StopMotor(RIGHT);
+    }
+  }
+}
+
+
 // ==================== Functions =================
 // Calculate Delta Time
 float CalculateDT(unsigned long currentTime, unsigned long prevTime)
@@ -886,8 +1136,8 @@ bool TargetDistance()
   long avgTicks = GetAverageEncoderTicks();
 
   if (avgTicks >= targetTicks) {
-    stopMotor(LEFT);
-    stopMotor(RIGHT);
+    StopMotor(LEFT);
+    StopMotor(RIGHT);
 
     return false;
   } else {
@@ -912,8 +1162,8 @@ float NormalizeAngle(float angle) {
 void DetectedFront() {
 
   while (IsFrontWallDetected()) {
-    stopMotor(LEFT);
-    stopMotor(RIGHT);
+    StopMotor(LEFT);
+    StopMotor(RIGHT);
 
     delay(100);
   }
@@ -946,8 +1196,8 @@ OutError OutputErrorForlaser()
 
   if (leftDistance <= 0 || rightDistance <= 0)
   {
-    stopMotor(LEFT);
-    stopMotor(RIGHT);
+    StopMotor(LEFT);
+    StopMotor(RIGHT);
     return {0, 0};
   }
 
@@ -979,8 +1229,8 @@ OutError OutputErrorForLeftWall()
 
   if (leftDistance <= 0)
   {
-    stopMotor(LEFT);
-    stopMotor(RIGHT);
+    StopMotor(LEFT);
+    StopMotor(RIGHT);
     return {0, 0};
   }
 
@@ -1007,8 +1257,8 @@ OutError OutputErrorForRightWall()
   float rightDistance = ReadRightDistance();
   if (rightDistance <= 0)
   {
-    stopMotor(LEFT);
-    stopMotor(RIGHT);
+    StopMotor(LEFT);
+    StopMotor(RIGHT);
     return {0, 0};
   }
 
