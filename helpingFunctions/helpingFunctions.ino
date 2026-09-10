@@ -29,7 +29,7 @@ BluetoothSerial SerialBT;
 #define LED_PIN 2 
 
 //IR 
-#define IR_PIN 23
+#define IR_PIN 34
 bool wallInFront = false;
 
 // ---- Left motor ----
@@ -109,7 +109,7 @@ VL53L0X leftLaser;
 VL53L0X rigthLaser;
 
 int secondXshut=4;
-int firstXshut= 15;
+int firstXshut= 5;
 
 float leftWallDistance;
 float rigthWallDistance;
@@ -262,7 +262,7 @@ void setup() {
 
 
   
-   //first_run();
+   first_run();
    //MoveStraight(30);
 
 }
@@ -290,13 +290,13 @@ void loop() {
   // delay(100);
 
 
-  // UpdateLasers();
+  UpdateLasers();
 
-  // Serial.print("leftLaser distance: ");
-  // Serial.println(leftWallDistance);
+  Serial.print("leftLaser distance: ");
+  Serial.println(leftWallDistance);
 
-  // Serial.print("rightLaser distance: ");
-  // Serial.println(rigthWallDistance);
+  Serial.print("rightLaser distance: ");
+  Serial.println(rigthWallDistance);
 
   //CorrectOffset();
 
