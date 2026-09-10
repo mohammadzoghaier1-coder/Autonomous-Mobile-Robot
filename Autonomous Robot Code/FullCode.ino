@@ -200,6 +200,14 @@ const float TURN_MIN_EFFECTIVE_SPEED = 125;
 // Anti-windup limit
 const float TURN_INTEGRAL_LIMIT = 10.0;
 
+
+// Movement PID
+float Kp_moveDistance = 0.4;
+float Kd_moveDistance = 0.1;
+
+const float DISTANCE_TOLERANCE = 5.0;
+const int MIN_MOVE_SPEED = 80;
+
 // ==================== Maze Flood-Fill Variables ================
 // enter n : n = (maze length )^2 - 1
 // test for 16*16 maze
@@ -290,20 +298,39 @@ void setup() {
   CurrentDirection = FORWARD_D;
 
   // Run the maze flood-fill exploration once
-  MazeLog("Running...");
-  MazeLog("Flood Fill Algorithm");
-  // FirstRun();
+  // MazeLog("Running...");
+  // MazeLog("Flood Fill Algorithm");
+  //  FirstRun();
   
-  // delay(5000);
+  // MazeLog("Finished Scanning the maze...");
+  // TurnRight90();
+  // TurnRight90();
+  // up = 1;
+  // down = 0;
+  // MazeLog("Starting Second Run....");
+  // delay(4000);
   // SecondRun();
+  
 }
 
 // ==================== Loop Function ================
 void loop() {
-  // WriteLeftDistance(ReadLeftDistance());
-  // WriteRightDistance(ReadRightDistance());
+  // LaserCoordinator();
 
-  
+  //  WriteLeftDistance(ReadLeftDistance());
+  //  WriteRightDistance(ReadRightDistance());
+
+  Serial.print("LEFT: ");
+  Serial.print(ReadLeftDistance());
+  Serial.print("     | Right: ");
+  Serial.println(ReadRightDistance());
+  Serial.println("=================================================");
+  OutputErrorForLeftWall();
+  Serial.print("error LEFT:    ");
+  Serial.println(error);
+  OutputErrorForRightWall();
+  Serial.print("error RIGHT:    ");
+  Serial.println(error);
   // WallFollower();
 }
 
@@ -608,6 +635,13 @@ void ReadRightEncoder()
 {
   Serial.print(" | Right Encoder: ");
   Serial.println(rightEncoderCount, 2);
+}
+
+
+void UpdateLasers()
+{
+  rightWallDistance = leftSensor.readRangeContinuousMillimeters();
+  leftWallDistance = rightSensor.readRangeContinuousMillimeters();
 }
 
 
