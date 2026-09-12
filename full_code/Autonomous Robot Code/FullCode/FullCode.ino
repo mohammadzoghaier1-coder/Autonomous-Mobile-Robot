@@ -219,10 +219,10 @@ unsigned long moveDistancePrevTime = 0;
 // ==================== Maze Flood-Fill Variables ================
 // enter n : n = (maze length )^2 - 1
 // test for 16*16 maze
-const int N = 7;
+const int N = 5;
 
 vector<vector<int>> maze(N, vector<int>(N, 0));
-vector<vector<bool>> vis(N, vector<bool>(N, false));
+vector<vector<bool>> vis(N, vector<bool>(N, false));  
 vector<vector<pair<int, int>>> parent(N, vector<pair<int, int>>(N, {-1, -1}));
 
 int dy[4] = {2, -2, 0, 0};
@@ -325,14 +325,14 @@ void setup() {
   MazeLog("Flood Fill Algorithm");
   FirstRun();
   
-  // MazeLog("Finished Scanning the maze...");
-  // TurnRight90();
-  // TurnRight90();
-  // up = 1;
-  // down = 0;
-  // MazeLog("Starting Second Run....");
-  // delay(4000);
-  // SecondRun();
+  MazeLog("Finished Scanning the maze...");
+  TurnRight90();
+  TurnRight90();
+  up = 1;
+  down = 0;
+  delay(1000);
+  MazeLog("Starting Second Run....");
+  SecondRun();
   
 }
 
@@ -717,9 +717,7 @@ void TurnLeft90() {
 void MoveStraight(float targetDistance_cm)
 {
   StopBothMotors();
-
   CorrectRotation();
-
   ResetEncoders();
 
   long targetTicks = CalculateTargetTicks(targetDistance_cm);
@@ -749,27 +747,19 @@ void MoveStraight(float targetDistance_cm)
       break;
     }
 
-    float currentSpeed =
-      CalculateMoveDistancePID(distanceError);
+    float currentSpeed = CalculateMoveDistancePID(distanceError);
 
-    encoderError =
-      CalculateError(leftTicks, rightTicks);
+    encoderError = CalculateError(leftTicks, rightTicks);
 
     unsigned long currentTime = millis();
-
-    float dt =
-      CalculateDT(currentTime, prevTime);
+    float dt = CalculateDT(currentTime, prevTime);
 
     prevTime = currentTime;
 
-    float straightCorrection =
-      CalculateEncoderPID(encoderError, dt);
+    float straightCorrection = CalculateEncoderPID(encoderError, dt);
 
-    int leftSpeed =
-      (int)(currentSpeed - straightCorrection);
-
-    int rightSpeed =
-      (int)(currentSpeed + straightCorrection);
+    int leftSpeed = (int)(currentSpeed - straightCorrection);
+    int rightSpeed = (int)(currentSpeed + straightCorrection);
 
     leftSpeed = constrain(leftSpeed, 0, 180);
     rightSpeed = constrain(rightSpeed, 0, 180);
@@ -1122,8 +1112,13 @@ void DetectedFront() {
 
 void ResetEncoders()
 {
-  leftEncoderCount = 0;
-  rightEncoderCount = 0;
+    portENTER_CRITICAL(&leftEncoderMux);
+    leftEncoderCount = 0;
+    portEXIT_CRITICAL(&leftEncoderMux);
+
+    portENTER_CRITICAL(&rightEncoderMux);
+    rightEncoderCount = 0;
+    portEXIT_CRITICAL(&rightEncoderMux);
 }
 
 
