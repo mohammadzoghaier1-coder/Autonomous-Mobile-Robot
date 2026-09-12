@@ -14,6 +14,8 @@
 #include <algorithm>
 #include "BluetoothSerial.h"
 
+using namespace std;
+
 // ==================== Pins ================
 // Left Motor
 #define ENA_L 33
@@ -141,7 +143,7 @@ volatile long rightEncoderCount = 0;
 // ==================== PID Parameters ================
 // Move Specific Distance PID
 // Gains
-float Kp_Encoder = 2;
+float Kp_Encoder = 1.5;
 float Ki_Encoder = 0;
 float Kd_Encoder = 0.5;
 
@@ -171,6 +173,8 @@ const float distance_INTEGRAL_LIMIT = 20.0;
 const float distance_PID_MAX = 30.0;
 
 float laserError;
+float laserPrevError;
+unsigned long laserPrevTime;
 
 
 
@@ -207,10 +211,9 @@ float Kd_moveDistance = 0.1;
 const float DISTANCE_TOLERANCE = 5.0;
 const int MIN_MOVE_SPEED = 80;
 
-float prevDistanceError = 0;
+float moveDistancePrevError = 0;
+unsigned long moveDistancePrevTime = 0;
 
-// Shared Parameters between PID
-unsigned long distancePrevTime = 0;
 
 
 // ==================== Maze Flood-Fill Variables ================
@@ -218,16 +221,16 @@ unsigned long distancePrevTime = 0;
 // test for 16*16 maze
 const int N = 7;
 
-std::vector<std::vector<int>> maze(N, std::vector<int>(N, 0));
-std::vector<std::vector<bool>> vis(N, std::vector<bool>(N, false));
-std::vector<std::vector<std::pair<int, int>>> parent(N, std::vector<std::pair<int, int>>(N, {-1, -1}));
+vector<vector<int>> maze(N, vector<int>(N, 0));
+vector<vector<bool>> vis(N, vector<bool>(N, false));
+vector<vector<pair<int, int>>> parent(N, vector<pair<int, int>>(N, {-1, -1}));
 
 int dy[4] = {2, -2, 0, 0};
 int dx[4] = {0, 0, 2, -2};
 
-std::vector<char> GlobalDirection = {'R', 'L', 'D', 'U'};
+vector<char> GlobalDirection = {'R', 'L', 'D', 'U'};
 
-std::stack<std::pair<int, int>> mazeSt;
+stack<pair<int, int>> mazeSt;
 
 bool up = true, down = false, rgt = false, lft = false;
 
@@ -318,9 +321,9 @@ void setup() {
 
   // Run the maze flood-fill exploration once
   
-  // MazeLog("Running...");
-  // MazeLog("Flood Fill Algorithm");
-  // FirstRun();
+  MazeLog("Running...");
+  MazeLog("Flood Fill Algorithm");
+  FirstRun();
   
   // MazeLog("Finished Scanning the maze...");
   // TurnRight90();
@@ -339,7 +342,7 @@ void loop() {
 
   //  WriteLeftDistance(ReadLeftDistance());
   //  WriteRightDistance(ReadRightDistance());
-  MoveStraight(20);
+  
   // WriteLeftEncoder();
   // WriteRightEncoder();
 
@@ -645,8 +648,8 @@ float ReadRightDistance() {
 
 void UpdateLasers()
 {
-  rightWallDistance = leftLaser.readRangeContinuousMillimeters();
-  leftWallDistance = rightLaser.readRangeContinuousMillimeters();
+  leftWallDistance = ReadLeftDistance();
+  rightWallDistance = ReadRightDistance();
 }
 
 
@@ -710,86 +713,76 @@ void TurnLeft90() {
 }
 
 
+
 void MoveStraight(float targetDistance_cm)
 {
-  // CorrectRotation();
-  // CorrectOffset();
+  StopBothMotors();
+
+  CorrectRotation();
 
   ResetEncoders();
 
-  // Reset Encoder PID
-  I_Encoder = 0;
-  encoderPrevError = 0;
-  prevTime = millis();
-
-  // Reset Move Distance PID
-  prevDistanceError = 0;
-
   long targetTicks = CalculateTargetTicks(targetDistance_cm);
 
-  distancePrevTime = millis();
+  I_Encoder = 0;
+  encoderPrevError = 0;
 
-  // Prevent D-term spike on first iteration
-  prevDistanceError = targetTicks;
+  moveDistancePrevError = targetTicks;
+  moveDistancePrevTime = millis();
+
+  prevTime = millis();
 
   while (true)
   {
+    long leftTicks = leftEncoderCount;
+    long rightTicks = rightEncoderCount;
+
     long avgTicks = GetAverageEncoderTicks();
 
-    float distanceError = targetTicks - avgTicks;
+    float distanceError =
+      CalculateError(targetTicks, avgTicks);
 
-    // if (IsFrontWallDetected())
-    // {
-    //   StopBothMotors();
-
-    //   while (IsFrontWallDetected())
-    //   {
-    //     TurnRight90();
-    //     delay(50);
-    //   }
-
-      
-    // }
-
-    // Reset Encoder PID after turning
-      I_Encoder = 0;
-      encoderPrevError = 0;
-      prevTime = millis();
-
-      // Reset Move Distance PID after turning
-      prevDistanceError = targetTicks;
-      distancePrevTime = millis();  
-    
-    // Check if target distance is reached
     if (distanceError <= DISTANCE_TOLERANCE)
     {
       StopBothMotors();
-      return;
+      delay(100);
+      break;
     }
 
-    // Calculate Move Distance PID
-    float currentSpeed = CalculateMoveDistancePID(distanceError);
+    float currentSpeed =
+      CalculateMoveDistancePID(distanceError);
 
-    // Calculate Encoder PID
-    encoderError = CalculateError(leftEncoderCount, rightEncoderCount);
+    encoderError =
+      CalculateError(leftTicks, rightTicks);
+
     unsigned long currentTime = millis();
-    float dt = CalculateDT(currentTime, prevTime);
+
+    float dt =
+      CalculateDT(currentTime, prevTime);
+
     prevTime = currentTime;
 
-    float straightCorrection = CalculateEncoderPID(encoderError, dt);
+    float straightCorrection =
+      CalculateEncoderPID(encoderError, dt);
 
-    // Calculate motor speeds
-    int leftSpeed = (int)(currentSpeed - straightCorrection);
-    int rightSpeed = (int)(currentSpeed + straightCorrection);
+    int leftSpeed =
+      (int)(currentSpeed - straightCorrection);
 
-    // Limit motor speeds
+    int rightSpeed =
+      (int)(currentSpeed + straightCorrection);
+
     leftSpeed = constrain(leftSpeed, 0, 180);
     rightSpeed = constrain(rightSpeed, 0, 180);
 
-    // Move forward
     MotorForward(leftSpeed, LEFT);
     MotorForward(rightSpeed, RIGHT);
   }
+
+  StopBothMotors();
+
+  CorrectOffset();
+
+  StopBothMotors();
 }
 
 
@@ -833,7 +826,7 @@ void TurnToYaw(float targetYaw) {
 
     // FIRST SAMPLE
     if (firstSample) {
-      prevError = error;
+      turnPrevError = turnError;
       firstSample = false;
     }
 
@@ -844,7 +837,7 @@ void TurnToYaw(float targetYaw) {
     // Serial.print(yawAngle, 2);
 
     // Serial.print(" | Error: ");
-    // Serial.print(error, 2);
+    // Serial.print(turnError, 2);
 
     // Serial.print(" | Output: ");
     // Serial.println(output, 2);
@@ -888,8 +881,8 @@ void LaserCoordinator()
 
   // Reset Laser PID
   I_laser = 0;
-  prevDistanceError = 0;
-  distancePrevTime = millis();
+  laserPrevError = 0;
+  laserPrevTime = millis();
 
   // Both walls detected
   if (leftDistance <= 8 && rightDistance <= 8)
@@ -942,7 +935,7 @@ void CorrectRotation()
 // Correct robot offset from the walls
 void CorrectOffset()
 {
-  ResetEncoders();
+  ResetEncoders();  
 
   UpdateLasers();
 
@@ -1076,8 +1069,8 @@ long CalculateTargetTicks(float targetDistance_cm)
 {
   float ticksPerRev = encoderPolesCount * 2 * motorGearRatio;
   float wheelCircumference_cm = PI * wheelDiameter;
-
-  return (long)((targetDistance_cm / wheelCircumference_cm) * ticksPerRev);
+  long targetTicks = ((targetDistance_cm / wheelCircumference_cm) * ticksPerRev);
+  return targetTicks;
 }
 
 
@@ -1161,9 +1154,9 @@ OutError OutputErrorForlaser()
 
   unsigned long currentTime = millis();
 
-  float dt = CalculateDT(currentTime, distancePrevTime);
+  float dt = CalculateDT(currentTime, laserPrevTime);
 
-  distancePrevTime = currentTime;
+  laserPrevTime = currentTime;
   float output = CalculateLaserPID(laserError, dt);
 
 
@@ -1189,13 +1182,14 @@ OutError OutputErrorForLeftWall()
     return {0, 0};
   }
 
-  float error = CalculateError(targetWallDistance, leftDistance);
+  laserError = CalculateError(targetWallDistance, leftDistance);
+
   unsigned long currentTime = millis();
-  float dt = CalculateDT(currentTime, distancePrevTime);
+  float dt = CalculateDT(currentTime, laserPrevTime);
 
-  distancePrevTime = currentTime;
+  laserPrevTime = currentTime;
 
-  float output = CalculateLaserPID(error, dt);
+  float output = CalculateLaserPID(laserError, dt);
 
   int leftSpeed = baseSpeed - output;
   int rightSpeed = baseSpeed + output;
@@ -1216,12 +1210,14 @@ OutError OutputErrorForRightWall()
     return {0, 0};
   }
 
-  float  error = CalculateError(targetWallDistance, rightDistance);
+  laserError = CalculateError(targetWallDistance, rightDistance);
 
   unsigned long currentTime = millis();
-  float dt = CalculateDT(currentTime, distancePrevTime);
-  distancePrevTime = currentTime;
-  float output = CalculateLaserPID(error, dt);
+  float dt = CalculateDT(currentTime, laserPrevTime);
+
+  laserPrevTime = currentTime;
+
+  float output = CalculateLaserPID(laserError, dt);
 
   int leftSpeed = baseSpeed + output;
   int rightSpeed = baseSpeed - output;
@@ -1277,9 +1273,9 @@ float CalculateLaserPID(float error, float dt)
   P_laser = Kp_distance * error;
   I_laser += error * dt * Ki_distance;
   I_laser = constrain(I_laser, -distance_INTEGRAL_LIMIT, distance_INTEGRAL_LIMIT);
-  D_laser = Kd_distance * ((error - prevDistanceError) / dt);
+  D_laser = Kd_distance * ((error - laserPrevError) / dt);
 
-  prevDistanceError = error;
+  laserPrevError = error;
 
   // PID output
   float output = P_laser + I_laser + D_laser;
@@ -1295,16 +1291,22 @@ float CalculateMoveDistancePID(float distanceError)
 {
   unsigned long currentDistanceTime = millis();
 
-  float dtDistance = CalculateDT(currentDistanceTime, distancePrevTime);
+  float dtDistance = CalculateDT(currentDistanceTime, moveDistancePrevTime);
 
-  float distanceDerivative = (distanceError - prevDistanceError) / dtDistance;
+  float distanceDerivative = (distanceError - moveDistancePrevError) / dtDistance;
 
-  float distanceOutput = Kp_moveDistance * distanceError + Kd_moveDistance * distanceDerivative;
+  float distanceOutput =
+    Kp_moveDistance * distanceError +
+    Kd_moveDistance * distanceDerivative;
 
-  prevDistanceError = distanceError;
-  distancePrevTime = currentDistanceTime;
+  moveDistancePrevError = distanceError;
+  moveDistancePrevTime = currentDistanceTime;
 
-  return constrain(distanceOutput, MIN_MOVE_SPEED, baseSpeed);
+  return constrain(
+    distanceOutput,
+    MIN_MOVE_SPEED,
+    baseSpeed
+  );
 }
 
 
@@ -1653,14 +1655,14 @@ void FirstRun()
             if (x - 1 >= 0)
                 maze[x - 1][y] = nwr;
             if (x + 1 < N)
-                maze[x + 1][y] = nwl;
+                maze[x][y + 1] = nwl;
 
             if (y - 2 >= 0 and nwf and !vis[x][y - 2])
                 MoveForward(x, y - 2, 'L');
             else if (x - 2 >= 0 and nwr and !vis[x - 2][y])
                 MoveForward(x - 2, y, 'U');
             else if (x + 2 < N and nwl and !vis[x + 2][y])
-                MoveForward(x + 2, y, 'D');
+                MoveForward(x, y + 2, 'D');
             else
                 MoveToPrevCell(x, y);
         }
@@ -1674,21 +1676,21 @@ void SecondRun()
 {
     int beg_x = N - 1, beg_y = 0;
 
-    std::vector<std::vector<std::pair<int, int>>> bfsParent(N, std::vector<std::pair<int, int>>(N, {-1, -1}));
-    std::vector<std::vector<bool>> visited(N, std::vector<bool>(N, false));
+    vector<vector<pair<int, int>>> bfsParent(N, vector<pair<int, int>>(N, {-1, -1}));
+    vector<vector<bool>> visited(N, vector<bool>(N, false));
 
-    std::queue<std::pair<int, int>> q;
+    queue<pair<int, int>> q;
     q.push({beg_x, beg_y});
     visited[beg_x][beg_y] = true;
 
     // Center goal cells, computed generically from N (works for any odd N = 2*cells - 1)
     int half = (N - 1) / 2;
-    std::vector<std::pair<int, int>> goals = {
+    vector<pair<int, int>> goals = {
         {half - 1, half - 1}, {half - 1, half + 1},
         {half + 1, half - 1}, {half + 1, half + 1}
     };
 
-    std::pair<int, int> goalCell = {-1, -1};
+    pair<int, int> goalCell = {-1, -1};
     bool found = false;
 
     while (!q.empty() && !found)
@@ -1737,16 +1739,16 @@ void SecondRun()
     }
 
     // Reconstruct path start -> goal
-    std::vector<std::pair<int, int>> path;
+    vector<pair<int, int>> path;
     path.push_back(goalCell);
-    std::pair<int, int> cur = goalCell;
+    pair<int, int> cur = goalCell;
 
     while (!(cur.first == beg_x && cur.second == beg_y))
     {
         cur = bfsParent[cur.first][cur.second];
         path.push_back(cur);
     }
-    std::reverse(path.begin(), path.end());
+    reverse(path.begin(), path.end());
 
     MazeLog("SecondRun: shortest path length = " + String((int)path.size() - 1));
 
