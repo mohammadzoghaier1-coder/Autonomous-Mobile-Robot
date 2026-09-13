@@ -62,7 +62,7 @@
   const int WALL_DETECTED = 8;
 
   float targetDistance_cm = Step;
-  float targetWallDistance = 6;
+  float targetWallDistance = 8;
   float leftWallDistance = 0;
   float rightWallDistance = 0;
 
@@ -335,9 +335,9 @@
     TurnRight90();
     up = 1;
     down = 0;
-    delay(1000);
-    MazeLog("Starting Second Run....");
-    SecondRun();
+    // delay(1000);
+    // MazeLog("Starting Second Run....");
+    // SecondRun();
     
   }
 
@@ -350,6 +350,9 @@
     
     // WriteLeftEncoder();
     // WriteRightEncoder();
+
+    // 
+    // WriteRightDistanceBlueTooth(ReadLeftDistance());
 
     // Serial.print("LEFT: ");
     // Serial.print(ReadLeftDistance());
@@ -965,13 +968,13 @@
     UpdateLasers();
 
     // Left wall
-    if (leftWallDistance < 6)
+    if (leftWallDistance < 10)
     {
-      if (leftWallDistance < 4)
+      if (leftWallDistance < 8)
       {
         bool goingForward = true;
 
-        while (leftWallDistance < 5)
+        while (leftWallDistance < 6)
         {
           UpdateLasers();
 
@@ -1021,11 +1024,11 @@
     {
       float rightDistance = ReadRightDistance();
 
-      if (rightDistance <= WALL_DETECTED && rightDistance < 4)
+      if (rightDistance <= WALL_DETECTED && rightDistance < 7)
       {
         bool goingForward = true;
 
-        while (rightDistance < 6)
+        while (rightDistance < 7)
         {
           UpdateLasers();
 
@@ -1615,8 +1618,7 @@
 
       while (!mazeSt.empty())
       {
-          WriteLeftDistanceBlueTooth(ReadLeftDistance());
-          WriteRightDistanceBlueTooth(ReadLeftDistance());
+         
           int x = mazeSt.top().first;
           int y = mazeSt.top().second;
 
