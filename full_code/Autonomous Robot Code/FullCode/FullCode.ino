@@ -3,13 +3,14 @@
   // Wheel Diameter 46mm
   // ==================== Libraries ================
   #include "MPU6050_6Axis_MotionApps20.h"
-  #include <VL53L0X.h>
+  #include <Adafruit_VL53L0X.h>
   #include "I2Cdev.h"
   #include <Wire.h>
 
   #include <vector>
   #include <stack>
   #include <queue>
+  #include <string>
   #include <utility>
   #include <algorithm>
   #include "BluetoothSerial.h"
@@ -59,10 +60,10 @@
   float baseSpeed = 125;
 
   const int Step = 23;
-  const int WALL_DETECTED = 8;
+  const int WALL_DETECTED = 6;
 
   float targetDistance_cm = Step;
-  float targetWallDistance = 8;
+  float targetWallDistance = 6;
   float leftWallDistance = 0;
   float rightWallDistance = 0;
 
@@ -90,9 +91,8 @@
   LocalDirectionStates CurrentDirection;
   BluetoothSerial SerialBT;
 
-  // Lazers
-  VL53L0X leftLaser;
-  VL53L0X rightLaser;
+  Adafruit_VL53L0X leftLaser;
+  Adafruit_VL53L0X rightLaser;
 
   // MPU6050
   MPU6050 mpu;
@@ -222,7 +222,7 @@
   // ==================== Maze Flood-Fill Variables ================
   // enter n : n = (maze length )^2 - 1
   // test for 16*16 maze
-  const int N = 9;
+  const int N = 15;
 
   vector<vector<int>> maze(N, vector<int>(N, 0));
   vector<vector<bool>> vis(N, vector<bool>(N, false));  
@@ -305,8 +305,8 @@
   // ==================== Setup Function ================
   void setup() {
     
-    Serial.begin(115200);
     SerialBT.begin("Zahtar");
+    Serial.begin(115200);
     Wire.begin();
 
     MotorInit();
@@ -326,15 +326,15 @@
 
     // Run the maze flood-fill exploration once
     
-    MazeLog("Running...");
-    MazeLog("Flood Fill Algorithm");
-    FirstRun();
+    // MazeLog("Running...");
+    // MazeLog("Flood Fill Algorithm");
+    // FirstRun();
     
-    MazeLog("Finished Scanning the maze...");
-    TurnRight90();
-    TurnRight90();
-    up = 1;
-    down = 0;
+    // MazeLog("Finished Scanning the maze...");
+    // TurnRight90();
+    // TurnRight90();
+    // up = 1;
+    // down = 0;
     // delay(1000);
     // MazeLog("Starting Second Run....");
     // SecondRun();
@@ -345,14 +345,14 @@
   void loop() {
     // LaserCoordinator();
 
-    //  WriteLeftDistance(ReadLeftDistance());
-    //  WriteRightDistance(ReadRightDistance());
+     WriteLeftDistance(ReadLeftDistance());
+     WriteRightDistance(ReadRightDistance());
     
     // WriteLeftEncoder();
     // WriteRightEncoder();
 
-    // 
-    // WriteRightDistanceBlueTooth(ReadLeftDistance());
+    WriteLeftDistanceBlueTooth(ReadLeftDistance()); 
+    WriteRightDistanceBlueTooth(ReadLeftDistance());
 
     // Serial.print("LEFT: ");
     // Serial.print(ReadLeftDistance());
@@ -510,27 +510,29 @@
     // Start LEFT sensor
     digitalWrite(LEFT_XSHUT_PIN, HIGH);
 
-    if (!leftLaser.init()) {
+    if (!leftLaser.begin()) {
       Serial.println("LEFT sensor failed!");
       while (true);
     }
 
     leftLaser.setAddress(LEFT_SENSOR_ADDRESS);
-    leftLaser.startContinuous();
-    leftLaser.setTimeout(100);
+    leftLaser.setMeasurementTimingBudgetMicroSeconds(50000);
+    leftLaser.startRangeContinuous(50);
     delay(20);
 
     // Start RIGHT sensor
     digitalWrite(RIGHT_XSHUT_PIN, HIGH);
 
-    if (!rightLaser.init()) {
+    if (!rightLaser.begin()) {
       Serial.println("RIGHT sensor failed!");
       while (true);
     }
 
     // rightLaser.setAddress(RIGHT_SENSOR_ADDRESS);
-    rightLaser.startContinuous();
-    rightLaser.setTimeout(100);
+    rightLaser.setMeasurementTimingBudgetMicroSeconds(50000);
+    rightLaser.startRangeContinuous(50);
+    
+   
 
     Serial.println("Both sensors ready.");
   }
@@ -635,23 +637,15 @@
   // ==================== Read Functions =================
   // Read Left Distance in cm
   float ReadLeftDistance() {
-    float distance = leftLaser.readRangeContinuousMillimeters();
+  uint16_t distance = leftLaser.readRange();
 
-    if (leftLaser.timeoutOccurred()) {
-      return -1;
-    }
-
-    return distance / 10.0;
+  return distance / 10.0;
   }
 
-  // Read right distance in cm
   float ReadRightDistance() {
-    float distance = rightLaser.readRangeContinuousMillimeters();
+  uint16_t distance = rightLaser.readRange();
 
-    if (rightLaser.timeoutOccurred()) {
-      return -1;
-    }
-    return distance / 10.0;
+  return distance / 10.0;
   }
 
   void UpdateLasers()
