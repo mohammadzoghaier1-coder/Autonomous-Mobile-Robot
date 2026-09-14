@@ -55,7 +55,7 @@ using namespace std;
 int encoderPolesCount = 14;
 float motorGearRatio = 29;
 float wheelDiameter = 4.6;  //cm
-float baseSpeed = 135;
+float baseSpeed = 145;
 
 const int Step = 22;
 const int WALL_DETECTED = 10;
@@ -208,7 +208,7 @@ unsigned long moveDistancePrevTime = 0;
 // ==================== Maze Flood-Fill Variables ================
 // enter n : n = (maze length )^2 - 1
 // test for 16*16 maze
-const int N = 15;
+const int N = 5;
 
 vector<vector<int>> maze(N, vector<int>(N, 0));
 vector<vector<bool>> vis(N, vector<bool>(N, false));  
@@ -308,6 +308,8 @@ void setup() {
   
   MazeLog("Finished Scanning the maze...");
   Turn180();
+
+  WriteMazeBlueTooth();
 
   up = 1;
   down = 0;
@@ -572,7 +574,6 @@ void MotorBackward(int speed, Motor motor) {
 }
 
 void StopMotor(Motor motor) {
-
   if (motor == LEFT) {
 
     digitalWrite(IN1_L, LOW);
@@ -595,15 +596,13 @@ void StopBothMotors()
 // ==================== Read Functions =================
 // Read Left Distance in cm
 float ReadLeftDistance() {
-uint16_t distance = leftLaser.readRange();
-
-return distance / 10.0;
+  uint16_t distance = leftLaser.readRange();
+  return distance / 10.0;
 }
 
 float ReadRightDistance() {
-uint16_t distance = rightLaser.readRange();
-
-return distance / 10.0;
+  uint16_t distance = rightLaser.readRange();
+  return distance / 10.0;
 }
 
 void UpdateLasers()
@@ -673,6 +672,25 @@ void WriteMPUValuesBlueTooth()
   SerialBT.print(" | Yaw Error: ");
   SerialBT.println(turnError);
 }
+
+
+void WriteMazeBlueTooth()
+{
+  SerialBT.println("Maze:");
+
+  for (int i = 0; i < N; i++)
+  {
+    for (int j = 0; j < N; j++)
+    {
+      SerialBT.print(maze[i][j]);
+      SerialBT.print(" ");
+    }
+
+    SerialBT.println();
+  }
+}
+
+
 
 // ==================== Control Functions =================
 void TurnRight90() {
@@ -1287,7 +1305,7 @@ float CalculateMoveDistancePID(float distanceError)
 
 void MazeLog(const String &text)
 {
-  Serial.println(text);
+  SerialBT.println(text);
 }
 
 // Wall-present helpers matching API::wallFront()/wallRight()/wallLeft()
