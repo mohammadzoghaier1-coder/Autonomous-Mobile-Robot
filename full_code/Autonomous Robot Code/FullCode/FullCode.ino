@@ -1264,38 +1264,7 @@ float CalculateMoveDistancePID(float distanceError)
   );
 }
 
-// ==================== Wall Follower ================
-//left wall follower algorithm
-void WallFollower() {
-  while (true) {
-    float leftDistance = ReadLeftDistance();    //measure left distance
-    float rightDistance = ReadRightDistance();  // measure right distance
 
-    bool isfrontWall = IsFrontWallDetected();  // see the front size if there is a wall or not
-      
-    // priority for front
-    if(!isfrontWall)
-    {
-      LaserCoordinator();
-    }
-    //right
-    else if (rightDistance > WALL_DETECTED) {
-      TurnRight90();
-      LaserCoordinator();
-    }
-    // left
-    else if (leftDistance > WALL_DETECTED) {
-      TurnLeft90();
-      LaserCoordinator();
-    }
-    //back
-    else {
-      TurnRight90();
-      TurnRight90();
-      LaserCoordinator();
-    }
-  }
-}
 
 // ==================== Maze Flood-Fill (FirstRun) ================
 // Ported from your API-based micromouse logic. Same algorithm/idea,
