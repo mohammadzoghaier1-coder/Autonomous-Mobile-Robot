@@ -137,7 +137,6 @@
 
     // ==================== Interrupt Variables ================
     // MPU INTERRUPT
-    volatile bool isWallDetected = false;
     volatile bool isMPUInterrupted = false;
     volatile long leftEncoderCount = 0;
     volatile long rightEncoderCount = 0;
@@ -222,7 +221,7 @@
     // ==================== Maze Flood-Fill Variables ================
     // enter n : n = (maze length )^2 - 1
     // test for 16*16 maze
-    const int N = 15;
+    const int N = 9;
 
     vector<vector<int>> maze(N, vector<int>(N, 0));
     vector<vector<bool>> vis(N, vector<bool>(N, false));  
@@ -240,12 +239,6 @@
 
 
     // ==================== ISR Functions ================
-    // IR
-    void IRAM_ATTR wallINT()
-    {
-      isWallDetected = (digitalRead(IR_pin) == LOW);
-    }
-
     // Left Encoder
     void IRAM_ATTR leftEncoderISR_C1() {
       portENTER_CRITICAL_ISR(&leftEncoderMux);
@@ -330,14 +323,14 @@
       MazeLog("Flood Fill Algorithm");
       FirstRun();
       
-      // MazeLog("Finished Scanning the maze...");
-      // TurnRight90();
-      // TurnRight90();
-      // up = 1;
-      // down = 0;
-      // delay(1000);
-      // MazeLog("Starting Second Run....");
-      // SecondRun();
+      MazeLog("Finished Scanning the maze...");
+      TurnRight90();
+      TurnRight90();
+      up = 1;
+      down = 0;
+      delay(1000);
+      MazeLog("Starting Second Run....");
+      SecondRun();
       
     }
 
@@ -351,8 +344,8 @@
       // WriteLeftEncoder();
       // WriteRightEncoder();
 
-        WriteLeftDistanceBlueTooth(ReadLeftDistance()); 
-        WriteRightDistanceBlueTooth(ReadLeftDistance());
+        // WriteLeftDistanceBlueTooth(ReadLeftDistance()); 
+        // WriteRightDistanceBlueTooth(ReadLeftDistance());
 
       // Serial.print("LEFT: ");
       // Serial.print(ReadLeftDistance());
@@ -417,8 +410,6 @@
     void IR_Init()
     {
       pinMode(IR_pin, INPUT);
-      attachInterrupt(digitalPinToInterrupt(IR_pin), wallINT, CHANGE);
-
     }
 
     void LED_Init()
@@ -976,8 +967,8 @@
 
             if (avgTicks < 100 && goingForward)
             {
-              MotorForward(125, LEFT);
-              MotorForward(100, RIGHT);
+              MotorForward(140, LEFT);
+              MotorForward(110, RIGHT);
             }
             else if (avgTicks > 0)
             {
@@ -986,7 +977,7 @@
 
               goingForward = false;
 
-              MotorBackward(130, LEFT);
+              MotorBackward(135, LEFT);
               MotorBackward(100, RIGHT);
             }
             else
@@ -1032,8 +1023,8 @@
 
             if (avgTicks < 100 && goingForward)
             {
-              MotorForward(100, LEFT);
-              MotorForward(150, RIGHT);
+              MotorForward(110, LEFT);
+              MotorForward(160, RIGHT);
             }
             else if (avgTicks > 0)
             {
@@ -1042,8 +1033,8 @@
 
               goingForward = false;
 
-              MotorBackward(100, LEFT);
-              MotorBackward(130, RIGHT);
+              MotorBackward(110, LEFT);
+              MotorBackward(140, RIGHT);
             }
             else
             {
@@ -1160,7 +1151,7 @@
 
 
     bool IsFrontWallDetected() {
-      return isWallDetected;
+      return (digitalRead(IR_pin) == LOW);
     }
 
 
