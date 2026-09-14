@@ -1,3 +1,4 @@
+//Full Code
 // Cell Size (24*24)
 // Robot Chassis Diameter 122mm
 // Wheel Diameter 46mm
@@ -278,6 +279,35 @@ void IRAM_ATTR rightEncoderISR_C2() {
   portEXIT_CRITICAL_ISR(&rightEncoderMux);
 }
 
+
+// ==================== New 3-Run Algorithm Prototypes ====================
+enum NewRunMode
+{
+  FIRST_EXPLORATION,
+  SECOND_EXPLORATION,
+  SPEED_RUN
+};
+
+void InitializeNewAlgorithm();
+bool NewRunExploration(NewRunMode mode);
+bool NewRunSpeedRun();
+void NewMarkVisited(int x, int y);
+void NewSenseWalls(int x, int y);
+void NewReflood();
+bool NewGetBestDirection(int x, int y, bool preferUnexplored,
+                         bool confirmedOnly, char &bestDirection);
+bool NewIsConfirmedOpen(int x, int y, char direction);
+void NewCalculateFinalFlood();
+bool NewIsGoal(int x, int y);
+bool NewInBounds(int x, int y);
+void NewGetNeighbor(int x, int y, char direction, int &nx, int &ny);
+void NewRecordWall(int x, int y, char direction);
+void NewRecordOpen(int x, int y, char direction);
+void NewMarkTraveled(int x, int y, char direction);
+void NewFaceDirection(char direction);
+void NewMoveForward(int &x, int &y, char direction);
+void NewReturnToStart();
+
 // ==================== Setup Function ================
 void setup() {
   
@@ -300,20 +330,22 @@ void setup() {
   // Set Initial Direction
   CurrentDirection = FORWARD_D;
 
-  // Run the maze flood-fill exploration once
   
-  MazeLog("Running...");
-  MazeLog("Flood Fill Algorithm");
-  FirstRun();
-  
-  MazeLog("Finished Scanning the maze...");
-  TurnRight90();
-  TurnRight90();
-  up = 1;
-  down = 0;
-  delay(1000);
-  MazeLog("Starting Second Run....");
-  SecondRun();
+//Run New Flood fill algorithm  
+//PHASE I    
+NewRunExploration(FIRST_EXPLORATION);
+
+delay(2000);
+NewReturnToStart();
+
+// PHASE II
+NewRunExploration(SECOND_EXPLORATION);
+
+delay(2000);
+NewReturnToStart();
+
+// PHASE III 
+NewRunSpeedRun();
 }
 
 // ==================== Loop Function ================
@@ -1686,4 +1718,968 @@ void SecondRun()
         CorrectDirection(dir);
         MoveStraight(Step);
     }
+}
+
+
+// ============================================================================
+// NEW 3-RUN FLOOD-FILL ALGORITHM
+// ============================================================================
+// This is the user's new algorithm adapted to the robot's existing maze
+// representation:
+//
+//   Logical cells are:
+//     (14,0), (14,2), ... , (0,14)
+//   A movement of one logical cell changes x/y by 2.
+//   The values between cells in maze[][] store the wall/open-road information.
+//
+// The old FirstRun() and SecondRun() functions are NOT used by setup anymore.
+// This section uses the new algorithm's:
+//   1. FIRST_EXPLORATION
+//   2. SECOND_EXPLORATION
+//   3. SPEED_RUN
+//
+// The physical robot is returned to the start between runs instead of using
+// the simulator reset button.
+
+// -------------------- New Algorithm State --------------------
+
+const int NEW_CELL_COUNT = 8;
+const int NEW_CELL_MIN = 0;
+const int NEW_CELL_MAX = 14;
+const int NEW_INF = 999;
+
+int newFlood[NEW_CELL_COUNT][NEW_CELL_COUNT];
+bool newKnown[NEW_CELL_COUNT][NEW_CELL_COUNT][4] = {};
+bool newWalls[NEW_CELL_COUNT][NEW_CELL_COUNT][4] = {};
+bool newVisited[NEW_CELL_COUNT][NEW_CELL_COUNT] = {};
+bool newTraveled[NEW_CELL_COUNT][NEW_CELL_COUNT][4] = {};
+
+int newMouseX = 7;
+int newMouseY = 0;
+
+// Direction order:
+// 0 = U, 1 = R, 2 = D, 3 = L
+const char NEW_DIRECTIONS[4] = {'U', 'R', 'D', 'L'};
+
+const int NEW_GOAL_COUNT = 4;
+
+// Logical 8x8 center cells.
+// In the physical maze representation these are:
+// (6,6), (6,8), (8,6), (8,8).
+const int NEW_GOAL_X[NEW_GOAL_COUNT] = {3, 3, 4, 4};
+const int NEW_GOAL_Y[NEW_GOAL_COUNT] = {3, 4, 3, 4};
+
+
+// Convert logical cell index 0..7 to the existing maze coordinate 0..14.
+int NewGridToMaze(int cell)
+{
+  return cell * 2;
+}
+
+// Convert existing maze coordinate 0,2,...,14 to logical 0..7.
+int NewMazeToGrid(int coordinate)
+{
+  return coordinate / 2;
+}
+
+
+// -------------------- New Algorithm Basic Helpers --------------------
+
+bool NewInBounds(int x, int y)
+{
+  return x >= 0 && x < NEW_CELL_COUNT &&
+         y >= 0 && y < NEW_CELL_COUNT;
+}
+
+
+bool NewIsGoal(int x, int y)
+{
+  for (int i = 0; i < NEW_GOAL_COUNT; i++)
+  {
+    if (x == NEW_GOAL_X[i] && y == NEW_GOAL_Y[i])
+      return true;
+  }
+
+  return false;
+}
+
+
+void NewGetNeighbor(
+  int x,
+  int y,
+  char direction,
+  int &nx,
+  int &ny)
+{
+  nx = x;
+  ny = y;
+
+  if (direction == 'U')
+    nx++;
+
+  else if (direction == 'R')
+    ny++;
+
+  else if (direction == 'D')
+    nx--;
+
+  else if (direction == 'L')
+    ny--;
+}
+
+
+int NewDirectionIndex(char direction)
+{
+  if (direction == 'U') return 0;
+  if (direction == 'R') return 1;
+  if (direction == 'D') return 2;
+  return 3;
+}
+
+
+char NewOppositeDirection(char direction)
+{
+  if (direction == 'U') return 'D';
+  if (direction == 'R') return 'L';
+  if (direction == 'D') return 'U';
+  return 'R';
+}
+
+
+// -------------------- Wall Memory --------------------
+// The new algorithm keeps its own wall/known/traveled memory.
+// This prevents it from depending on the old FirstRun()/SecondRun()
+// implementation.
+
+void NewRecordWall(int x, int y, char direction)
+{
+  if (!NewInBounds(x, y))
+    return;
+
+  int d = NewDirectionIndex(direction);
+
+  newWalls[x][y][d] = true;
+  newKnown[x][y][d] = true;
+
+  int nx, ny;
+  NewGetNeighbor(x, y, direction, nx, ny);
+
+  if (NewInBounds(nx, ny))
+  {
+    int opposite = NewDirectionIndex(
+      NewOppositeDirection(direction));
+
+    newWalls[nx][ny][opposite] = true;
+    newKnown[nx][ny][opposite] = true;
+  }
+}
+
+
+void NewRecordOpen(int x, int y, char direction)
+{
+  if (!NewInBounds(x, y))
+    return;
+
+  int d = NewDirectionIndex(direction);
+
+  newWalls[x][y][d] = false;
+  newKnown[x][y][d] = true;
+
+  int nx, ny;
+  NewGetNeighbor(x, y, direction, nx, ny);
+
+  if (NewInBounds(nx, ny))
+  {
+    int opposite = NewDirectionIndex(
+      NewOppositeDirection(direction));
+
+    newWalls[nx][ny][opposite] = false;
+    newKnown[nx][ny][opposite] = true;
+  }
+}
+
+
+void NewMarkTraveled(int x, int y, char direction)
+{
+  if (!NewInBounds(x, y))
+    return;
+
+  int d = NewDirectionIndex(direction);
+  newTraveled[x][y][d] = true;
+
+  int nx, ny;
+  NewGetNeighbor(x, y, direction, nx, ny);
+
+  if (NewInBounds(nx, ny))
+  {
+    int opposite = NewDirectionIndex(
+      NewOppositeDirection(direction));
+
+    newTraveled[nx][ny][opposite] = true;
+  }
+}
+
+
+// -------------------- Flood Initialization --------------------
+
+void InitializeNewAlgorithm()
+{
+  // Start at the bottom-left logical cell.
+  newMouseX = 7;
+  newMouseY = 0;
+
+  // The physical robot starts facing forward/up in the global maze.
+  CurrentDirection = FORWARD_D;
+
+  // Clear all new-algorithm memory.
+  for (int x = 0; x < NEW_CELL_COUNT; x++)
+  {
+    for (int y = 0; y < NEW_CELL_COUNT; y++)
+    {
+      newVisited[x][y] = false;
+
+      for (int d = 0; d < 4; d++)
+      {
+        newKnown[x][y][d] = false;
+        newWalls[x][y][d] = false;
+        newTraveled[x][y][d] = false;
+      }
+    }
+  }
+
+  // Initialize flood values from the four center goals.
+  for (int x = 0; x < NEW_CELL_COUNT; x++)
+  {
+    for (int y = 0; y < NEW_CELL_COUNT; y++)
+    {
+      int best = NEW_INF;
+
+      for (int g = 0; g < NEW_GOAL_COUNT; g++)
+      {
+        int dx = x - NEW_GOAL_X[g];
+        int dy = y - NEW_GOAL_Y[g];
+
+        if (dx < 0) dx = -dx;
+        if (dy < 0) dy = -dy;
+
+        int distance = dx + dy;
+
+        if (distance < best)
+          best = distance;
+      }
+
+      newFlood[x][y] = best;
+    }
+  }
+
+  // Mark the four goals in the simulator-style way.
+  for (int i = 0; i < NEW_GOAL_COUNT; i++)
+  {
+    int gx = NewGridToMaze(NEW_GOAL_X[i]);
+    int gy = NewGridToMaze(NEW_GOAL_Y[i]);
+
+    MazeLog("Goal: (" + String(gx) + "," + String(gy) + ")");
+  }
+
+  MazeLog("New 3-run algorithm initialized.");
+}
+
+
+// -------------------- Sensing --------------------
+
+void NewMarkVisited(int x, int y)
+{
+  if (!NewInBounds(x, y))
+    return;
+
+  newVisited[x][y] = true;
+
+ 
+}
+
+
+void NewSenseWalls(int x, int y)
+{
+  // The robot's current direction is represented by CurrentDirection.
+  //
+  // CurrentDirection:
+  //   FORWARD_D = U
+  //   RIGHT_D   = R
+  //   BACKWARD_D= D
+  //   LEFT_D    = L
+
+  char front = 'U';
+
+  if (CurrentDirection == FORWARD_D)
+    front = 'U';
+  else if (CurrentDirection == RIGHT_D)
+    front = 'R';
+  else if (CurrentDirection == BACKWARD_D)
+    front = 'D';
+  else if (CurrentDirection == LEFT_D)
+    front = 'L';
+
+  char right;
+  char left;
+
+  if (front == 'U')
+  {
+    right = 'R';
+    left = 'L';
+  }
+  else if (front == 'R')
+  {
+    right = 'D';
+    left = 'U';
+  }
+  else if (front == 'D')
+  {
+    right = 'L';
+    left = 'R';
+  }
+  else
+  {
+    right = 'U';
+    left = 'D';
+  }
+
+  // Front sensor.
+  if (WallFrontPresent())
+    NewRecordWall(x, y, front);
+  else
+    NewRecordOpen(x, y, front);
+
+  // Left laser.
+  if (WallLeftPresent())
+    NewRecordWall(x, y, left);
+  else
+    NewRecordOpen(x, y, left);
+
+  // Right laser.
+  if (WallRightPresent())
+    NewRecordWall(x, y, right);
+  else
+    NewRecordOpen(x, y, right);
+}
+
+
+// -------------------- Reflood --------------------
+// This is the same flood-fill idea as the new algorithm:
+// update a cell to min(open neighbor flood) + 1 until stable.
+
+void NewReflood()
+{
+  bool changed = true;
+
+  while (changed)
+  {
+    changed = false;
+
+    for (int x = 0; x < NEW_CELL_COUNT; x++)
+    {
+      for (int y = 0; y < NEW_CELL_COUNT; y++)
+      {
+        if (NewIsGoal(x, y))
+          continue;
+
+        int minimum = NEW_INF;
+
+        for (int d = 0; d < 4; d++)
+        {
+          char direction = NEW_DIRECTIONS[d];
+
+          int nx, ny;
+          NewGetNeighbor(
+            x, y, direction, nx, ny);
+
+          if (!NewInBounds(nx, ny))
+            continue;
+
+          if (newWalls[x][y][d])
+            continue;
+
+          if (newFlood[nx][ny] < minimum)
+            minimum = newFlood[nx][ny];
+        }
+
+        if (minimum < NEW_INF &&
+            newFlood[x][y] != minimum + 1)
+        {
+          newFlood[x][y] = minimum + 1;
+          changed = true;
+        }
+      }
+    }
+  }
+}
+
+
+// -------------------- Direction Selection --------------------
+
+bool NewGetBestDirection(
+  int x,
+  int y,
+  bool preferUnexplored,
+  bool confirmedOnly,
+  char &bestDirection)
+{
+  int bestValue = NEW_INF;
+  char candidates[4];
+  int candidateCount = 0;
+
+  // Find the smallest flood value among allowed neighbors.
+  for (int d = 0; d < 4; d++)
+  {
+    char direction = NEW_DIRECTIONS[d];
+
+    int nx, ny;
+    NewGetNeighbor(
+      x, y, direction, nx, ny);
+
+    if (!NewInBounds(nx, ny))
+      continue;
+
+    if (newWalls[x][y][d])
+      continue;
+
+    if (confirmedOnly &&
+        !newKnown[x][y][d])
+    {
+      continue;
+    }
+
+    if (newFlood[nx][ny] < bestValue)
+      bestValue = newFlood[nx][ny];
+  }
+
+  if (bestValue >= NEW_INF)
+    return false;
+
+  // Keep every direction having the same best flood value.
+  for (int d = 0; d < 4; d++)
+  {
+    char direction = NEW_DIRECTIONS[d];
+
+    int nx, ny;
+    NewGetNeighbor(
+      x, y, direction, nx, ny);
+
+    if (!NewInBounds(nx, ny))
+      continue;
+
+    if (newWalls[x][y][d])
+      continue;
+
+    if (confirmedOnly &&
+        !newKnown[x][y][d])
+    {
+      continue;
+    }
+
+    if (newFlood[nx][ny] == bestValue)
+      candidates[candidateCount++] = direction;
+  }
+
+  // Run 2 preference:
+  // first prefer roads that have not been traveled,
+  // then prefer cells that have not been visited.
+  if (preferUnexplored)
+  {
+    for (int i = 0; i < candidateCount; i++)
+    {
+      char direction = candidates[i];
+
+      int d = NewDirectionIndex(direction);
+
+      if (!newTraveled[x][y][d])
+      {
+        bestDirection = direction;
+        return true;
+      }
+    }
+
+    for (int i = 0; i < candidateCount; i++)
+    {
+      char direction = candidates[i];
+
+      int nx, ny;
+      NewGetNeighbor(
+        x, y, direction, nx, ny);
+
+      if (!newVisited[nx][ny])
+      {
+        bestDirection = direction;
+        return true;
+      }
+    }
+  }
+
+  // Normal flood-fill tie breaking.
+  bestDirection = candidates[0];
+  return true;
+}
+
+
+// -------------------- Physical Movement --------------------
+
+void NewFaceDirection(char target)
+{
+  char current = 'U';
+
+  if (CurrentDirection == FORWARD_D)
+    current = 'U';
+  else if (CurrentDirection == RIGHT_D)
+    current = 'R';
+  else if (CurrentDirection == BACKWARD_D)
+    current = 'D';
+  else if (CurrentDirection == LEFT_D)
+    current = 'L';
+
+  if (current == target)
+    return;
+
+  if (current == 'U')
+  {
+    if (target == 'R')
+      TurnRight90();
+    else if (target == 'D')
+    {
+      TurnRight90();
+      TurnRight90();
+    }
+    else if (target == 'L')
+      TurnLeft90();
+  }
+  else if (current == 'R')
+  {
+    if (target == 'D')
+      TurnRight90();
+    else if (target == 'L')
+    {
+      TurnRight90();
+      TurnRight90();
+    }
+    else if (target == 'U')
+      TurnLeft90();
+  }
+  else if (current == 'D')
+  {
+    if (target == 'L')
+      TurnRight90();
+    else if (target == 'U')
+    {
+      TurnRight90();
+      TurnRight90();
+    }
+    else if (target == 'R')
+      TurnLeft90();
+  }
+  else if (current == 'L')
+  {
+    if (target == 'U')
+      TurnRight90();
+    else if (target == 'R')
+    {
+      TurnRight90();
+      TurnRight90();
+    }
+    else if (target == 'D')
+      TurnLeft90();
+  }
+}
+
+
+void NewMoveForward(
+  int &x,
+  int &y,
+  char direction)
+{
+  int oldX = x;
+  int oldY = y;
+
+  NewFaceDirection(direction);
+
+  // Use the robot's existing distance controller.
+  MoveStraight(Step);
+
+  NewMarkTraveled(
+    oldX,
+    oldY,
+    direction);
+
+  NewGetNeighbor(
+    oldX,
+    oldY,
+    direction,
+    x,
+    y);
+}
+
+
+// -------------------- Exploration --------------------
+
+bool NewRunExploration(NewRunMode mode)
+{
+  bool preferUnexplored =
+    (mode == SECOND_EXPLORATION);
+
+  while (!NewIsGoal(
+    newMouseX,
+    newMouseY))
+  {
+    NewMarkVisited(
+      newMouseX,
+      newMouseY);
+
+    NewSenseWalls(
+      newMouseX,
+      newMouseY);
+
+    NewReflood();
+
+    char bestDirection;
+
+    if (!NewGetBestDirection(
+      newMouseX,
+      newMouseY,
+      preferUnexplored,
+      false,
+      bestDirection))
+    {
+      MazeLog("ERROR: no available direction during exploration.");
+      StopBothMotors();
+      return false;
+    }
+
+    NewMoveForward(
+      newMouseX,
+      newMouseY,
+      bestDirection);
+  }
+
+  NewMarkVisited(
+    newMouseX,
+    newMouseY);
+
+  NewSenseWalls(
+    newMouseX,
+    newMouseY);
+
+  NewReflood();
+
+  return true;
+}
+
+
+// -------------------- Confirmed-Path Flood --------------------
+
+bool NewIsConfirmedOpen(
+  int x,
+  int y,
+  char direction)
+{
+  int nx, ny;
+
+  NewGetNeighbor(
+    x, y, direction, nx, ny);
+
+  if (!NewInBounds(nx, ny))
+    return false;
+
+  int d = NewDirectionIndex(direction);
+
+  return newKnown[x][y][d] &&
+         !newWalls[x][y][d];
+}
+
+
+void NewCalculateFinalFlood()
+{
+  // Start from infinity.
+  for (int x = 0; x < NEW_CELL_COUNT; x++)
+  {
+    for (int y = 0; y < NEW_CELL_COUNT; y++)
+      newFlood[x][y] = NEW_INF;
+  }
+
+  // Multi-source BFS from the four center goals.
+  int queueX[NEW_CELL_COUNT * NEW_CELL_COUNT];
+  int queueY[NEW_CELL_COUNT * NEW_CELL_COUNT];
+
+  int head = 0;
+  int tail = 0;
+
+  for (int i = 0; i < NEW_GOAL_COUNT; i++)
+  {
+    int gx = NEW_GOAL_X[i];
+    int gy = NEW_GOAL_Y[i];
+
+    newFlood[gx][gy] = 0;
+
+    queueX[tail] = gx;
+    queueY[tail] = gy;
+    tail++;
+  }
+
+  while (head < tail)
+  {
+    int x = queueX[head];
+    int y = queueY[head];
+    head++;
+
+    for (int d = 0; d < 4; d++)
+    {
+      char direction = NEW_DIRECTIONS[d];
+
+      if (!NewIsConfirmedOpen(
+        x, y, direction))
+      {
+        continue;
+      }
+
+      int nx, ny;
+      NewGetNeighbor(
+        x, y, direction, nx, ny);
+
+      int nextValue =
+        newFlood[x][y] + 1;
+
+      if (nextValue < newFlood[nx][ny])
+      {
+        newFlood[nx][ny] = nextValue;
+
+        queueX[tail] = nx;
+        queueY[tail] = ny;
+        tail++;
+      }
+    }
+  }
+}
+
+
+// -------------------- Final Speed Run --------------------
+
+bool NewRunSpeedRun()
+{
+  NewCalculateFinalFlood();
+
+  if (newFlood[newMouseX][newMouseY] >= NEW_INF)
+  {
+    MazeLog("ERROR: no confirmed path from start to goal.");
+    StopBothMotors();
+    return false;
+  }
+
+  while (!NewIsGoal(
+    newMouseX,
+    newMouseY))
+  {
+   
+
+    char bestDirection;
+
+    if (!NewGetBestDirection(
+      newMouseX,
+      newMouseY,
+      false,
+      true,
+      bestDirection))
+    {
+      MazeLog("ERROR: no confirmed direction during speed run.");
+      StopBothMotors();
+      return false;
+    }
+
+    int nx, ny;
+
+    NewGetNeighbor(
+      newMouseX,
+      newMouseY,
+      bestDirection,
+      nx,
+      ny);
+
+    if (newFlood[nx][ny] !=
+        newFlood[newMouseX][newMouseY] - 1)
+    {
+      MazeLog("ERROR: final flood invariant broken.");
+      StopBothMotors();
+      return false;
+    }
+
+    NewMoveForward(
+      newMouseX,
+      newMouseY,
+      bestDirection);
+  }
+
+ 
+
+  StopBothMotors();
+
+  return true;
+}
+
+
+// -------------------- Return Robot To Start --------------------
+// This replaces the simulator's waitForManualReset().
+// The maze memory is preserved, but the physical robot drives back to
+// the start before the next algorithm phase.
+
+void NewReturnToStart()
+{
+  // We know the robot reached a center goal.
+  // Build a confirmed shortest path from the current goal back to start.
+
+  int startX = 7;
+  int startY = 0;
+
+  int parentX[NEW_CELL_COUNT][NEW_CELL_COUNT];
+  int parentY[NEW_CELL_COUNT][NEW_CELL_COUNT];
+  bool seen[NEW_CELL_COUNT][NEW_CELL_COUNT];
+
+  for (int x = 0; x < NEW_CELL_COUNT; x++)
+  {
+    for (int y = 0; y < NEW_CELL_COUNT; y++)
+    {
+      parentX[x][y] = -1;
+      parentY[x][y] = -1;
+      seen[x][y] = false;
+    }
+  }
+
+  int queueX[NEW_CELL_COUNT * NEW_CELL_COUNT];
+  int queueY[NEW_CELL_COUNT * NEW_CELL_COUNT];
+
+  int head = 0;
+  int tail = 0;
+
+  queueX[tail] = newMouseX;
+  queueY[tail] = newMouseY;
+  tail++;
+
+  seen[newMouseX][newMouseY] = true;
+
+  bool found = false;
+
+  while (head < tail && !found)
+  {
+    int x = queueX[head];
+    int y = queueY[head];
+    head++;
+
+    if (x == startX && y == startY)
+    {
+      found = true;
+      break;
+    }
+
+    for (int d = 0; d < 4; d++)
+    {
+      char direction = NEW_DIRECTIONS[d];
+
+      if (!NewIsConfirmedOpen(
+        x, y, direction))
+      {
+        continue;
+      }
+
+      int nx, ny;
+
+      NewGetNeighbor(
+        x, y, direction, nx, ny);
+
+      if (!seen[nx][ny])
+      {
+        seen[nx][ny] = true;
+
+        parentX[nx][ny] = x;
+        parentY[nx][ny] = y;
+
+        queueX[tail] = nx;
+        queueY[tail] = ny;
+        tail++;
+      }
+    }
+  }
+
+  if (!found)
+  {
+    MazeLog("ERROR: cannot return to start.");
+    StopBothMotors();
+    return;
+  }
+
+  // Reconstruct current -> start, then reverse it.
+  int pathX[NEW_CELL_COUNT * NEW_CELL_COUNT];
+  int pathY[NEW_CELL_COUNT * NEW_CELL_COUNT];
+
+  int pathLength = 0;
+
+  int x = startX;
+  int y = startY;
+
+  pathX[pathLength] = x;
+  pathY[pathLength] = y;
+  pathLength++;
+
+  while (!(x == newMouseX && y == newMouseY))
+  {
+    int px = parentX[x][y];
+    int py = parentY[x][y];
+
+    if (px < 0 || py < 0)
+    {
+      MazeLog("ERROR: invalid return path.");
+      StopBothMotors();
+      return;
+    }
+
+    x = px;
+    y = py;
+
+    pathX[pathLength] = x;
+    pathY[pathLength] = y;
+    pathLength++;
+  }
+
+  // path currently goes start -> goal.
+  // Execute it backwards: goal -> start.
+  for (int i = pathLength - 1; i > 0; i--)
+  {
+    int x0 = pathX[i];
+    int y0 = pathY[i];
+
+    int x1 = pathX[i - 1];
+    int y1 = pathY[i - 1];
+
+    char direction;
+
+    if (x1 == x0 + 1 && y1 == y0)
+      direction = 'U';
+    else if (x1 == x0 - 1 && y1 == y0)
+      direction = 'D';
+    else if (y1 == y0 + 1 && x1 == x0)
+      direction = 'R';
+    else if (y1 == y0 - 1 && x1 == x0)
+      direction = 'L';
+    else
+    {
+      MazeLog("ERROR: invalid return movement.");
+      StopBothMotors();
+      return;
+    }
+
+    // Use the same movement function as the new algorithm.
+    NewMoveForward(
+      newMouseX,
+      newMouseY,
+      direction);
+  }
+
+  // Make sure the software position is exactly the start.
+  newMouseX = startX;
+  newMouseY = startY;
+
+  MazeLog("Returned to START.");
 }
