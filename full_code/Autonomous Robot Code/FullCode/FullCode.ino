@@ -41,7 +41,7 @@ using namespace std;
 #define RIGHT_XSHUT_PIN 4
 
 // IR
-#define IR_pin 32
+#define IR_pin 34
 
 // ON BOARD LED
 #define LED_PIN 2
@@ -58,7 +58,7 @@ float wheelDiameter = 4.6;  //cm
 float baseSpeed = 135;
 
 const int Step = 22;
-const int WALL_DETECTED = 10;
+const int WALL_DETECTED = 6;
 
 float targetDistance_cm = Step;
 float targetWallDistance = 6;
@@ -171,7 +171,7 @@ float laserPrevError;
 unsigned long laserPrevTime;
 
 // TURN PID GAINS
-float Kp_turn = 1.75;
+float Kp_turn = 1.9;
 float Ki_turn = 0.0;
 float Kd_turn = 0.5;
 
@@ -186,9 +186,9 @@ const int SYNC_MAX_CORRECTION = 5;
 const float SYNC_KP = 1.0;
 
 // TURN PID TUNING
-const float TURN_SPEED_MAX = 125.0;
+const float TURN_SPEED_MAX = 135.0;
 const float TURN_TOLERANCE = 2;
-const float TURN_MIN_EFFECTIVE_SPEED = 110;
+const float TURN_MIN_EFFECTIVE_SPEED = 120;
 const float TURN_INTEGRAL_LIMIT = 10.0;
 
 //Error
@@ -208,7 +208,7 @@ unsigned long moveDistancePrevTime = 0;
 // ==================== Maze Flood-Fill Variables ================
 // enter n : n = (maze length )^2 - 1
 // test for 16*16 maze
-const int N = 15;
+const int N = 9;
 
 vector<vector<int>> maze(N, vector<int>(N, 0));
 vector<vector<bool>> vis(N, vector<bool>(N, false));  
@@ -307,8 +307,8 @@ void setup() {
   FirstRun();
   
   MazeLog("Finished Scanning the maze...");
-  Turn180();
-
+  TurnRight90();
+  TurnRight90();
   up = 1;
   down = 0;
   delay(1000);
@@ -702,21 +702,6 @@ void TurnLeft90() {
   CurrentDirection = newDirection;
 }
 
-
-void Turn180() {
-  StopBothMotors();
-  delay(100);
-
-  LocalDirectionStates newDirection = (LocalDirectionStates)((CurrentDirection + 2) % 4);
-
-  TurnToYaw(directionYaw[newDirection]);
-  CurrentDirection = newDirection;
-
-  StopBothMotors();
-  delay(100);
-}
-
-
 void MoveStraight(float targetDistance_cm)
 {
   StopBothMotors();
@@ -929,13 +914,13 @@ void CorrectOffset()
   UpdateLasers();
 
   // Left wall
-  if (leftWallDistance < 8)
+  if (leftWallDistance < 6)
   {
-    if (leftWallDistance < 6)
+    if (leftWallDistance < 4)
     {
       bool goingForward = true;
 
-      while (leftWallDistance < 6)
+      while (leftWallDistance < 5)
       {
         UpdateLasers();
 
@@ -985,7 +970,7 @@ void CorrectOffset()
   {
     float rightDistance = ReadRightDistance();
 
-    if (rightDistance < 8)
+    if (rightDistance < 6)
     {
       bool goingForward = true;
 
@@ -1279,7 +1264,38 @@ float CalculateMoveDistancePID(float distanceError)
   );
 }
 
+// ==================== Wall Follower ================
+//left wall follower algorithm
+void WallFollower() {
+  while (true) {
+    float leftDistance = ReadLeftDistance();    //measure left distance
+    float rightDistance = ReadRightDistance();  // measure right distance
 
+    bool isfrontWall = IsFrontWallDetected();  // see the front size if there is a wall or not
+      
+    // priority for front
+    if(!isfrontWall)
+    {
+      LaserCoordinator();
+    }
+    //right
+    else if (rightDistance > WALL_DETECTED) {
+      TurnRight90();
+      LaserCoordinator();
+    }
+    // left
+    else if (leftDistance > WALL_DETECTED) {
+      TurnLeft90();
+      LaserCoordinator();
+    }
+    //back
+    else {
+      TurnRight90();
+      TurnRight90();
+      LaserCoordinator();
+    }
+  }
+}
 
 // ==================== Maze Flood-Fill (FirstRun) ================
 // Ported from your API-based micromouse logic. Same algorithm/idea,
@@ -1324,7 +1340,8 @@ void CorrectDirection(char globalDirection)
         }
         else if (globalDirection == 'D')
         {
-            Turn180();
+            TurnRight90();
+            TurnRight90();
             up = 0;
             down = 1;
         }
@@ -1351,7 +1368,8 @@ void CorrectDirection(char globalDirection)
         }
         else if (globalDirection == 'L')
         {
-            Turn180();
+            TurnRight90();
+            TurnRight90();
             rgt = 0;
             lft = 1;
         }
@@ -1372,7 +1390,8 @@ void CorrectDirection(char globalDirection)
         }
         else if (globalDirection == 'R')
         {
-            Turn180();
+            TurnRight90();
+            TurnRight90();
             lft = 0;
             rgt = 1;
         }
@@ -1393,7 +1412,8 @@ void CorrectDirection(char globalDirection)
         }
         else if (globalDirection == 'U')
         {
-            Turn180();
+            TurnRight90();
+            TurnRight90();
             down = 0;
             up = 1;
         }
