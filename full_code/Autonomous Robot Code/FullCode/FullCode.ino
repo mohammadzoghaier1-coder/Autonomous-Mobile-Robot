@@ -41,7 +41,7 @@ using namespace std;
 #define RIGHT_XSHUT_PIN 4
 
 // IR
-#define IR_pin 34
+#define IR_pin 32
 
 // ON BOARD LED
 #define LED_PIN 2
@@ -58,7 +58,7 @@ float wheelDiameter = 4.6;  //cm
 float baseSpeed = 135;
 
 const int Step = 22;
-const int WALL_DETECTED = 8;
+const int WALL_DETECTED = 10;
 
 float targetDistance_cm = Step;
 float targetWallDistance = 6;
@@ -171,7 +171,7 @@ float laserPrevError;
 unsigned long laserPrevTime;
 
 // TURN PID GAINS
-float Kp_turn = 1.9;
+float Kp_turn = 1.75;
 float Ki_turn = 0.0;
 float Kd_turn = 0.5;
 
