@@ -58,7 +58,7 @@ float wheelDiameter = 4.6;  //cm
 float baseSpeed = 135;
 
 const int Step = 22;
-const int WALL_DETECTED = 6;
+const int WALL_DETECTED = 8;
 
 float targetDistance_cm = Step;
 float targetWallDistance = 6;
