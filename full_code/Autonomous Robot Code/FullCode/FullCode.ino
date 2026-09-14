@@ -308,6 +308,7 @@ void setup() {
   
   MazeLog("Finished Scanning the maze...");
   Turn180();
+
   up = 1;
   down = 0;
   delay(1000);
@@ -704,7 +705,7 @@ void TurnLeft90() {
 
 void Turn180() {
   StopBothMotors();
-  delay(10);
+  delay(100);
 
   LocalDirectionStates newDirection = (LocalDirectionStates)((CurrentDirection + 2) % 4);
 
@@ -712,7 +713,7 @@ void Turn180() {
   CurrentDirection = newDirection;
 
   StopBothMotors();
-  delay(10);
+  delay(100);
 }
 
 
