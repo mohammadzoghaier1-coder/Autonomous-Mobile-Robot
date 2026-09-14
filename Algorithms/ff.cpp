@@ -4,6 +4,9 @@
 #include <vector>
 #include <utility>
 #include <algorithm>
+#include <queue>
+#include <chrono>
+#include <thread>
 
 #include "API.h"
 using namespace std;
@@ -17,19 +20,33 @@ void log(const std::string &text)
 }
 // enter n : n = (maze length )^2 - 1
 //  test for 16*16 maze
-const int n = 31;
+const int n = 9;
 
 vector maze(n, vector<int>(n, 0));
 vector vis(n, vector<bool>(n, 0));
 
 vector parent(n, vector<pair<int, int>>(n, {-1, -1}));
-
+queue<pair<int, int>> q;
+vector step(n, vector<char>(n, '-'));
 vector<char> global_direction = {'R', 'L', 'D', 'U'};
 
 stack<pair<int, int>> st;
 
 bool up = true, down = false, rgt = false, lft = false;
-
+bool checkDone()
+{
+    for (int i = 0; i < n; i += 2)
+    {
+        for (int j = 0; i < n; j += 2)
+        {
+            if (!vis[i][j])
+            {
+                return false;
+            }
+        }
+    }
+    return true;
+}
 void correctDirection(char globalDirection)
 {
     if (up)
@@ -222,6 +239,7 @@ void moveToPrevCell(int &x, int &y)
         }
     }
 }
+
 void first_run()
 {
     int beg_x = n - 1, beg_y = 0;
@@ -256,7 +274,11 @@ void first_run()
             else if (y - 2 >= 0 and nwl and !vis[x][y - 2])
                 moveForward(x, y - 2, 'L');
             else
+            {
+                if (checkDone())
+                    return;
                 moveToPrevCell(x, y);
+            }
         }
         else if (down)
         {
@@ -274,7 +296,11 @@ void first_run()
             else if (y + 2 < n and nwl and !vis[x][y + 2])
                 moveForward(x, y + 2, 'R');
             else
+            {
+                if (checkDone())
+                    return;
                 moveToPrevCell(x, y);
+            }
         }
         else if (rgt)
         {
@@ -292,7 +318,11 @@ void first_run()
             else if (x - 2 >= 0 and nwl and !vis[x - 2][y])
                 moveForward(x - 2, y, 'U');
             else
+            {
+                if (checkDone())
+                    return;
                 moveToPrevCell(x, y);
+            }
         }
         else if (lft)
         {
@@ -310,15 +340,136 @@ void first_run()
             else if (x + 2 < n and nwl and !vis[x + 2][y])
                 moveForward(x + 2, y, 'D');
             else
+            {
+                if (checkDone())
+                    return;
                 moveToPrevCell(x, y);
+            }
         }
+    }
+}
+void second_run()
+{
+    int beg_x = n - 1, beg_y = 0;
+
+    vector<vector<pair<int, int>>> bfsParent(n, vector<pair<int, int>>(n, {-1, -1}));
+    vector<vector<bool>> visited(n, vector<bool>(n, false));
+
+    queue<pair<int, int>> q;
+    q.push({beg_x, beg_y});
+    visited[beg_x][beg_y] = true;
+
+    // Center goal cells, computed generically from n (works for any odd n = 2*cells - 1)
+    int half = (n - 1) / 2;
+    vector<pair<int, int>> goals = {
+        {half - 1, half - 1}, {half - 1, half + 1}, {half + 1, half - 1}, {half + 1, half + 1}};
+
+    pair<int, int> goalCell = {-1, -1};
+    bool found = false;
+
+    while (!q.empty() && !found)
+    {
+        auto [x, y] = q.front();
+        q.pop();
+
+        for (int k = 0; k < 4 && !found; ++k)
+        {
+            int xx = x + dx[k];
+            int yy = y + dy[k];
+
+            if (xx < 0 || yy < 0 || xx >= n || yy >= n)
+                continue;
+            if (visited[xx][yy])
+                continue;
+
+            bool open = false;
+            if (global_direction[k] == 'R')
+                open = (maze[x][y + 1] == 1);
+            else if (global_direction[k] == 'L')
+                open = (maze[x][y - 1] == 1);
+            else if (global_direction[k] == 'U')
+                open = (maze[x - 1][y] == 1);
+            else if (global_direction[k] == 'D')
+                open = (maze[x + 1][y] == 1);
+
+            if (open)
+            {
+                visited[xx][yy] = true;
+                bfsParent[xx][yy] = {x, y};
+                q.push({xx, yy});
+
+                for (auto &g : goals)
+                {
+                    if (xx == g.first && yy == g.second)
+                    {
+                        found = true;
+                        goalCell = {xx, yy};
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    if (!found)
+    {
+        log("second_run: no path to goal found");
+        return;
+    }
+
+    vector<pair<int, int>> path;
+    path.push_back(goalCell);
+    pair<int, int> cur = goalCell;
+
+    while (!(cur.first == beg_x && cur.second == beg_y))
+    {
+        cur = bfsParent[cur.first][cur.second];
+        path.push_back(cur);
+    }
+    reverse(path.begin(), path.end());
+
+    log("second_run: shortest path length = " + to_string(path.size() - 1));
+
+    for (size_t i = 1; i < path.size(); ++i)
+    {
+        int x0 = path[i - 1].first, y0 = path[i - 1].second;
+        int x1 = path[i].first, y1 = path[i].second;
+
+        char dir;
+        if (x1 == x0 - 2 && y1 == y0)
+            dir = 'U';
+        else if (x1 == x0 + 2 && y1 == y0)
+            dir = 'D';
+        else if (y1 == y0 + 2 && x1 == x0)
+            dir = 'R';
+        else if (y1 == y0 - 2 && x1 == x0)
+            dir = 'L';
+        else
+            continue;
+
+        correctDirection(dir);
+        API::moveForward();
     }
 }
 
 int main()
 {
+
     log("Running...");
     log("Flood Fill Algorithm");
+    if (!checkDone())
+    {
+        first_run();
+        API::turnRight();
+        API::turnRight();
+        down = false, up = true;
+    }
 
-    first_run();
+    this_thread::sleep_for(chrono::seconds(5));
+    second_run();
+}
+string x(int a)
+{
+    cout << "ERROR";
+    return " ";
 }
