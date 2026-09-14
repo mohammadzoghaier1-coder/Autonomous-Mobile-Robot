@@ -1,517 +1,2685 @@
-#include<Wire.h>
-#include<I2Cdev.h>
-#include<VL53L0X.h>
+//Full Code
+// Cell Size (24*24)
+// Robot Chassis Diameter 122mm
+// Wheel Diameter 46mm
+// ==================== Libraries ================
 #include "MPU6050_6Axis_MotionApps20.h"
+#include <Adafruit_VL53L0X.h>
+#include "I2Cdev.h"
+#include <Wire.h>
 
-//Some Constants 
-const float wheelDiameter = 4.6;
-const int encoderPolesCount = 14;
-const int motorGearRatio = 29;
-const int ticksPerRev = encoderPolesCount * 2 * motorGearRatio;
-const int baseSpeed = 110;
-const int globalDelay = 20;
-const float MIN_WALL_DISTANCE = 2.0;
-const float MAX_WALL_DISTANCE = 30.0;
-const float TARGET_WALL_DISTANCE = 6.0; 
+#include <vector>
+#include <stack>
+#include <queue>
+#include <string>
+#include <utility>
+#include <algorithm>
+#include "BluetoothSerial.h"
 
-//Constants of PID 
-const float SYNC_KP = 1.0; //decide how strongly we react when one wheel is ahead of other 
-const float SYNC_MAX_CORRECTION = 5;// to limit the max corrections and not became to large 
+using namespace std;
 
-const float WALL_KP = 2.0; // decide how strongly we react when the robot is not centered
-const float MAX_WALL_CORRECTION = 10.0;// to control laser and not give an aggressive values 
-
-//varaibles of the PID 
-float encoderCorrection = 0.0;
-float wallCorrection = 0.0;
-
-//LEFT MOTOR
+// ==================== Pins ================
+// Left Motor
 #define ENA_L 33
 #define IN1_L 26
 #define IN2_L 25
 
-//RIGHT MOTOR
+// Right Motor
 #define ENA_R 12
 #define IN1_R 14
 #define IN2_R 27
 
-//Left Encoder 
+// Left Encoder
 #define leftEncoderC1 19
 #define leftEncoderC2 18
 
-//Right Encoder
+// Right Encoder
 #define rightEncoderC1 16
 #define rightEncoderC2 17
 
-//Encoders counters
-volatile long leftEncoderCount = 0 ;
+// Lasers
+#define LEFT_XSHUT_PIN 5
+#define RIGHT_XSHUT_PIN 4
+
+// IR
+#define IR_pin 32
+
+// ON BOARD LED
+#define LED_PIN 2
+
+// Interrupt pin
+#define Interrupt_Pin 15
+
+#define OUTPUT_READABLE_YAWPITCHROLL
+
+// ==================== Constants ================
+int encoderPolesCount = 14;
+float motorGearRatio = 29;
+float wheelDiameter = 4.6;  //cm
+float baseSpeed = 135;
+
+const int Step = 22;
+const int WALL_DETECTED = 10;
+
+float targetDistance_cm = Step;
+float targetWallDistance = 6;
+float leftWallDistance = 0;
+float rightWallDistance = 0;
+
+// Lazers Addresses
+const uint8_t LEFT_SENSOR_ADDRESS = 0x30;
+// const uint8_t RIGHT_SENSOR_ADDRESS = 0x31;
+
+const float directionYaw[4] = {
+  0,
+  90.0,
+  180.0,
+  270.0
+};
+
+// ==================== Variables ================
+// MOTOR SELECTOR
+enum Motor { LEFT, RIGHT };
+enum LocalDirectionStates { FORWARD_D, RIGHT_D, BACKWARD_D, LEFT_D};
+
+portMUX_TYPE leftEncoderMux = portMUX_INITIALIZER_UNLOCKED;
+portMUX_TYPE rightEncoderMux = portMUX_INITIALIZER_UNLOCKED;
+
+LocalDirectionStates CurrentDirection;
+BluetoothSerial SerialBT;
+
+Adafruit_VL53L0X leftLaser;
+Adafruit_VL53L0X rightLaser;
+
+// MPU6050
+MPU6050 mpu;
+float yawAngle;
+
+// MPU6050 Control / Status Variables
+bool isDMPReady = false;
+uint8_t MPUIntStatus;
+uint8_t devStatus;
+uint16_t packetSize;
+uint8_t FIFOBuffer[64];
+
+// Orientation / Motion Variables
+Quaternion q; 
+VectorInt16 aa;
+VectorInt16 gy;
+VectorInt16 aaReal;
+VectorInt16 aaWorld;
+VectorFloat gravity;
+
+float euler[3];
+float ypr[3];
+
+struct OutError 
+{
+  float leftSpeed;
+  float rightSpeed;
+};
+
+// TEAPOT PACKET
+uint8_t teapotPacket[14] = { '$', 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0x00, 0x00, '\r', '\n' };
+
+// Error tolerance
+float tolerance = 1;
+float error;
+float prevError;
+
+float currentTime;
+float prevTime;
+
+// ==================== Interrupt Variables ================
+// MPU INTERRUPT
+volatile bool isMPUInterrupted = false;
+volatile long leftEncoderCount = 0;
 volatile long rightEncoderCount = 0;
 
-//Encoders Interrupts
-void IRAM_ATTR leftEncoderISR_C1(){
+// ==================== PID Parameters ================
+// Move Specific Distance PID
+// Gains
+float Kp_Encoder = 1.75;
+float Ki_Encoder = 0;
+float Kd_Encoder = 0.5;
+
+// Controller signals
+float P_Encoder;
+float I_Encoder;
+float D_Encoder;
+
+float maxPID_Out = 30;
+
+// Encoder Error
+float encoderError;
+float encoderPrevError;
+
+// Lazers PID
+float Kp_distance = 1.75;
+float Ki_distance = 0.0;
+float Kd_distance = 0.5;
+
+// Controller signals
+float P_laser;
+float I_laser;
+float D_laser;
+
+const float distance_INTEGRAL_LIMIT = 20.0;
+const float distance_PID_MAX = 30.0;
+
+float laserError;
+float laserPrevError;
+unsigned long laserPrevTime;
+
+// TURN PID GAINS
+float Kp_turn = 1.75;
+float Ki_turn = 0.0;
+float Kd_turn = 0.5;
+
+// Controller signals
+float P_mpu;
+float I_mpu;
+float D_mpu;
+
+// LEFT / RIGHT SPEED SYNC
+const unsigned long SYNC_SAMPLE_MS = 20;
+const int SYNC_MAX_CORRECTION = 5;
+const float SYNC_KP = 1.0;
+
+// TURN PID TUNING
+const float TURN_SPEED_MAX = 135.0;
+const float TURN_TOLERANCE = 2;
+const float TURN_MIN_EFFECTIVE_SPEED = 120;
+const float TURN_INTEGRAL_LIMIT = 10.0;
+
+//Error
+float turnError;
+float turnPrevError;
+
+// Movement PID
+float Kp_moveDistance = 0.4;
+float Kd_moveDistance = 0.1;
+
+const float DISTANCE_TOLERANCE = 5.0;
+const int MIN_MOVE_SPEED = 80;
+
+float moveDistancePrevError = 0;
+unsigned long moveDistancePrevTime = 0;
+
+// ==================== Maze Flood-Fill Variables ================
+// enter n : n = (maze length )^2 - 1
+// test for 16*16 maze
+const int N = 15;
+
+vector<vector<int>> maze(N, vector<int>(N, 0));
+vector<vector<bool>> vis(N, vector<bool>(N, false));  
+vector<vector<pair<int, int>>> parent(N, vector<pair<int, int>>(N, {-1, -1}));
+
+int dy[4] = {2, -2, 0, 0};
+int dx[4] = {0, 0, 2, -2};
+
+vector<char> GlobalDirection = {'R', 'L', 'D', 'U'};
+
+stack<pair<int, int>> mazeSt;
+
+bool up = true, down = false, rgt = false, lft = false;
+
+// ==================== ISR Functions ================
+// Left Encoder
+void IRAM_ATTR leftEncoderISR_C1() {
+  portENTER_CRITICAL_ISR(&leftEncoderMux);
   bool a = digitalRead(leftEncoderC1);
   bool b = digitalRead(leftEncoderC2);
-  
-  if(a == b)
+
+  if (a == b) {
     leftEncoderCount++;
-  else
+  } else {
     leftEncoderCount--;
+  }
+  portEXIT_CRITICAL_ISR(&leftEncoderMux);
 }
 
-void IRAM_ATTR leftEncoderISR_C2(){
+void IRAM_ATTR leftEncoderISR_C2() {
+  portENTER_CRITICAL_ISR(&leftEncoderMux);
   bool a = digitalRead(leftEncoderC1);
   bool b = digitalRead(leftEncoderC2);
 
-  if(a != b)
+  if (a != b) {
     leftEncoderCount++;
-  else
+  } else {
     leftEncoderCount--;
+  }
+  portEXIT_CRITICAL_ISR(&leftEncoderMux);
 }
 
-void IRAM_ATTR rightEncoderISR_C1() 
-{
+// Right Encoder
+void IRAM_ATTR rightEncoderISR_C1() {
+  portENTER_CRITICAL_ISR(&rightEncoderMux);
   bool a = digitalRead(rightEncoderC1);
   bool b = digitalRead(rightEncoderC2);
 
   if (a == b) {
     rightEncoderCount--;
-  }
-  else {
+  } else {
     rightEncoderCount++;
   }
+  portEXIT_CRITICAL_ISR(&rightEncoderMux);
 }
 
-
-void IRAM_ATTR rightEncoderISR_C2(){
+void IRAM_ATTR rightEncoderISR_C2() {
+  portENTER_CRITICAL_ISR(&rightEncoderMux);
   bool a = digitalRead(rightEncoderC1);
   bool b = digitalRead(rightEncoderC2);
 
-  if(a != b)
+  if (a != b) {
     rightEncoderCount--;
-  else 
+  } else {
     rightEncoderCount++;
+  }
+  portEXIT_CRITICAL_ISR(&rightEncoderMux);
 }
 
-// MPU variables 
-MPU6050 mpu ; //object from MPU6050 that we used 
-bool dmpReady = false; //this will tell us if the DMP is ready 
-uint8_t mpuIntStatus; // stores MPU interrupt status 
-uint8_t devStatus; // stores initialization result 
-uint16_t packetSize; // size of one DMP packet
-uint16_t fifoCount; // amount of data currently in FIFO
-uint8_t fifoBuffer[64]; // stores DMP data
 
-//Orientation Variables
-//these vaiables will used for the motion oriantation 
-Quaternion q;
-VectorFloat gravity;
-float ypr[3];
+// ==================== New 3-Run Algorithm Prototypes ====================
+enum NewRunMode
+{
+  FIRST_EXPLORATION,
+  SECOND_EXPLORATION,
+  SPEED_RUN
+};
 
-float yawAngle = 0.0; 
+void InitializeNewAlgorithm();
+bool NewRunExploration(NewRunMode mode);
+bool NewRunSpeedRun();
+void NewMarkVisited(int x, int y);
+void NewSenseWalls(int x, int y);
+void NewReflood();
+bool NewGetBestDirection(int x, int y, bool preferUnexplored,
+                         bool confirmedOnly, char &bestDirection);
+bool NewIsConfirmedOpen(int x, int y, char direction);
+void NewCalculateFinalFlood();
+bool NewIsGoal(int x, int y);
+bool NewInBounds(int x, int y);
+void NewGetNeighbor(int x, int y, char direction, int &nx, int &ny);
+void NewRecordWall(int x, int y, char direction);
+void NewRecordOpen(int x, int y, char direction);
+void NewMarkTraveled(int x, int y, char direction);
+void NewFaceDirection(char direction);
+void NewMoveForward(int &x, int &y, char direction);
+void NewReturnToStart();
 
-#define INTERRUPT_PIN 15
-volatile bool mpuInterrupt = false;
-
-void IRAM_ATTR dmpDataReady(){
-  mpuInterrupt = true;
-}
-
-//Sensors 
-// XSHUT pins for the both seonsors 
-#define LEFT_XSHUT_PIN 5
-#define RIGHT_XSHUT_PIN 4
-
-#define LEFT_SENSOR_ADDRESS 0x30 //Address of the two sensors 
-#define RIGHT_SENSOR_ADDRESS 0x31
-
-VL53L0X leftSensor;//objects from laser sensor 
-VL53L0X rightSensor;
-
-float leftDistance = 0.0;
-float rightDistance = 0.0;
-
-//IR 
-#define IR_PIN 23
-
+// ==================== Setup Function ================
 void setup() {
-  // put your setup code here, to run once:
+  
+  SerialBT.begin("Zahtar");
   Serial.begin(115200);
-  //I2C
   Wire.begin();
 
-//Motors
-  //LEFT Motor
-  pinMode(IN1_L, OUTPUT); // to make this pin an output pin
-  pinMode(IN2_L, OUTPUT); // to make this pin an output pin
+  MotorInit();
+  EncoderInit();
+  LaserInit(); 
+  IR_Init();
+  LED_Init();
+  InitializeMPU_6050();
+  InitializeVL53();
 
-  analogWriteResolution(ENA_L, 8); // to make the PWM from 0 to 255
-  analogWriteFrequency(ENA_L, 5000); // set the the PWM Frequency  
-  //RIGHT Motor
+  // intterrupt pin
+  pinMode(Interrupt_Pin, INPUT);
+  attachInterrupt(digitalPinToInterrupt(Interrupt_Pin), DMPDataReady, RISING);
+
+  // Set Initial Direction
+  CurrentDirection = FORWARD_D;
+
+  
+//Run New Flood fill algorithm  
+//PHASE I    
+NewRunExploration(FIRST_EXPLORATION);
+
+delay(2000);
+NewReturnToStart();
+
+// PHASE II
+NewRunExploration(SECOND_EXPLORATION);
+
+delay(2000);
+NewReturnToStart();
+
+// PHASE III 
+NewRunSpeedRun();
+}
+
+// ==================== Loop Function ================
+void loop() {
+  // LaserCoordinator();
+
+  //  WriteLeftDistance(ReadLeftDistance());
+  //  WriteRightDistance(ReadRightDistance());
+  
+  // WriteLeftEncoder();
+  // WriteRightEncoder();
+
+    // WriteLeftDistanceBlueTooth(ReadLeftDistance()); 
+    // WriteRightDistanceBlueTooth(ReadLeftDistance());
+
+  // Serial.print("LEFT: ");
+  // Serial.print(ReadLeftDistance());
+  // Serial.print("     | Right: ");
+  // Serial.println(ReadRightDistance());
+  // Serial.println("=================================================");
+  // OutputErrorForLeftWall();
+  // Serial.print("error LEFT:    ");
+  // Serial.println(error);
+  // OutputErrorForRightWall();
+  // Serial.print("error RIGHT:    ");
+  // Serial.println(error);
+  // WallFollower();
+}
+
+// ==================== Initializing Functions ================
+
+void MotorInit()
+{
+  // Initializing motors
+  pinMode(IN1_L, OUTPUT);
+  pinMode(IN2_L, OUTPUT);
+
   pinMode(IN1_R, OUTPUT);
   pinMode(IN2_R, OUTPUT);
+
   analogWriteResolution(ENA_R, 8);
   analogWriteFrequency(ENA_R, 5000);
 
-  //Stop The motors at the start
-  //left motor 
-  digitalWrite(IN1_L, LOW);
-  digitalWrite(IN2_L, LOW);
-  analogWrite(ENA_L, 0);
+  analogWriteResolution(ENA_L, 8);
+  analogWriteFrequency(ENA_L, 5000);
 
-  //right motor
-  digitalWrite(IN1_R, LOW);
-  digitalWrite(IN2_R, LOW);
-  analogWrite(ENA_R, 0);
+  StopBothMotors();
+}
 
-//Encoders
+void EncoderInit()
+{
+  // Initializing ENCODER
+  pinMode(leftEncoderC1, INPUT_PULLUP);
+  pinMode(leftEncoderC2, INPUT_PULLUP);
 
-//Attach interrupt on every change of the signals 
-// the interrupt should call our function to change the counters values 
-attachInterrupt(digitalPinToInterrupt(leftEncoderC1), leftEncoderISR_C1, CHANGE);
-attachInterrupt(digitalPinToInterrupt(leftEncoderC2), leftEncoderISR_C2, CHANGE);
+  pinMode(rightEncoderC1, INPUT_PULLUP);
+  pinMode(rightEncoderC2, INPUT_PULLUP);
 
-attachInterrupt(digitalPinToInterrupt(rightEncoderC1), rightEncoderISR_C1, CHANGE);
-attachInterrupt(digitalPinToInterrupt(rightEncoderC2), rightEncoderISR_C2, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(leftEncoderC1), leftEncoderISR_C1, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(leftEncoderC2), leftEncoderISR_C2, CHANGE);
 
+  attachInterrupt(digitalPinToInterrupt(rightEncoderC1), rightEncoderISR_C1, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(rightEncoderC2), rightEncoderISR_C2, CHANGE);
+}
 
+void LaserInit()
+{
+  pinMode(LEFT_XSHUT_PIN, OUTPUT);
+  pinMode(RIGHT_XSHUT_PIN, OUTPUT);
+}
 
-//MPU
-  init_MPU();
+void IR_Init()
+{
+  pinMode(IR_pin, INPUT);
+}
+
+void LED_Init()
+{
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, LOW);
+}
+
+void InitializeMPU_6050() {
+#if I2CDEV_IMPLEMENTATION == I2CDEV_ARDUINO_WIRE
   
-//Sensors
-  //laser Sensors 
-  init_laserSensors();
+  Wire.setClock(400000);
 
-  //IR
-  pinMode(IR_PIN,INPUT); 
+#elif I2CDEV_IMPLEMENTATION == I2CDEV_BUILTIN_FASTWIRE
+  Fastwire::setup(400, true);
 
+#endif
 
-}
+  // Initialize Device
+  Serial.println(F("Initializing I2C devices..."));
+  mpu.initialize();
 
-void loop() {
-  // put your main code here, to run repeatedly:
-  moveStraight(20);
-  delay(4000);
+  // Verifiy Connection
+  Serial.println(F("Testing MPU6050 connection..."));
 
-}
+  if (mpu.testConnection() == false) 
+  {
+    Serial.println("MPU6050 connection failed");
+    while (true);
+  } 
+  else 
+  {
+    Serial.println("MPU6050 connection successful");
+    Blink(3);
+  }
 
-float encoderToDistance(long ticks){
-    
-    float ratio = PI * wheelDiameter;
+  // Initialize DMP
+  Serial.println(F("Initializing DMP..."));
+  devStatus = mpu.dmpInitialize();
 
-    return ((float)ticks / ticksPerRev) * ratio;
-}
+  // GYRO / ACCEL OFFSETS
+  mpu.setXGyroOffset(0);
+  mpu.setYGyroOffset(0);
+  mpu.setZGyroOffset(0);
 
-long distanceToTicks(float distance_cm){
-  float ratio = PI * wheelDiameter;
+  mpu.setXAccelOffset(0);
+  mpu.setYAccelOffset(0);
+  mpu.setZAccelOffset(0);
 
-  return (distance_cm / ratio) * ticksPerRev;
-}
+  // Check DMP
+  if (devStatus == 0) {
 
-void init_MPU(){
-
-  mpu.initialize(); // initialization the mpu object 
-  pinMode(INTERRUPT_PIN, INPUT); // this for make the pin as input pin
-  
-  devStatus = !mpu.dmpInitialize(); //stores the result of the mpu init
-  
-  if(devStatus == 0){
-    Serial.println("DMP Initialization Failed");
-  }else{
-
-    //Calibrate the accelerometer and gyroscope
-    // 6 -> for do multiple calibration iterations 
     mpu.CalibrateAccel(6);
     mpu.CalibrateGyro(6);
 
-    mpu.setDMPEnabled(true);//Enabling the DMP
-    dmpReady = true;
-    //MPU INTERRUPT 
-    attachInterrupt(digitalPinToInterrupt(INTERRUPT_PIN), dmpDataReady, RISING);
+    Serial.println("These are the Active offsets: ");
+    mpu.PrintActiveOffsets();
 
-    /*
-      The DMP puts its data into something called the FIFO.
-      FIFO is basically a small data queue inside the MPU6050.
-      This function tells us:
-      "How many bytes belong to one complete DMP packet?"
-    */
-    packetSize = mpu.dmpGetFIFOPacketSize();//Store the pucket size 
+    Serial.println(F("Enabling DMP..."));
+    mpu.setDMPEnabled(true);
 
-    Serial.println("DMP Initialized Successfully");
+    // ESP32 INTERRUPT
+    
+    MPUIntStatus = mpu.getIntStatus();
+
+    // DMP READY
+    Serial.println(F("DMP ready! Waiting for first interrupt..."));
+    isDMPReady = true;
+    packetSize = mpu.dmpGetFIFOPacketSize();
+
+    Blink(5);
+  } else {
+    Serial.print("DMP initialization failed. Code: ");
+    Serial.println(devStatus);
   }
-
-}
-//This function is just for read and prepare the dmp mpu functions   
-void ReadMPU(){
-  if(!dmpReady)
-    return;
-
-  if(!mpuInterrupt)
-    return;
-
-  mpuInterrupt = false;
-  fifoCount = mpu.getFIFOCount();
-
-  if(fifoCount >= 1024){
-    mpu.resetFIFO();
-    return;
-  }
-  //this for packetizing the data until we reach packerSize to having complete packet 
-  while(fifoCount < packetSize){
-
-    fifoCount = mpu.getFIFOCount();
-  }
-
-  mpu.getFIFOBytes(fifoBuffer, packetSize); //this will copy the packet to fifoBuffer variable
-  mpu.dmpGetQuaternion(&q, fifoBuffer); //this for extracting the quaternion from the dmp packet
-  mpu.dmpGetGravity(&gravity, &q); //this for calculate the gravity vector 
-  mpu.dmpGetYawPitchRoll(ypr, &q, &gravity); //this for get and assigned  yaw bitch roll  
-
-  yawAngle = ypr[0] * 180 /M_PI;//convert the radians into degrees 
-
-
 }
 
-
-void init_laserSensors(){
-
-  pinMode(LEFT_XSHUT_PIN, OUTPUT); // this will make the xshut pins as output pin
-  pinMode(RIGHT_XSHUT_PIN, OUTPUT);
+//Initialize Lazers Sensor
+void InitializeVL53() {
   
-  //turining both sensors off 
+  // Turn both sensors OFF
   digitalWrite(LEFT_XSHUT_PIN, LOW);
+  delay(20);
+
   digitalWrite(RIGHT_XSHUT_PIN, LOW);
+  delay(20);
 
-  //turning and assign the address for sensors sensor by sensor to avoid the conflicts address problems 
-
-  //turing the left sensor 
+  // Start LEFT sensor
   digitalWrite(LEFT_XSHUT_PIN, HIGH);
-  
 
-  if(!leftSensor.init()){
-    Serial.println("LEFT Sensor Failed!");
-    while(true);
+  if (!leftLaser.begin()) {
+    Serial.println("LEFT sensor failed!");
+    while (true);
   }
-  leftSensor.setAddress(LEFT_SENSOR_ADDRESS);
-  leftSensor.setTimeout(100);
-  leftSensor.startContinuous();
 
-  //Start Right sensor 
+  leftLaser.setAddress(LEFT_SENSOR_ADDRESS);
+  leftLaser.setMeasurementTimingBudgetMicroSeconds(50000);
+  leftLaser.startRangeContinuous(50);
+  delay(20);
 
+  // Start RIGHT sensor
   digitalWrite(RIGHT_XSHUT_PIN, HIGH);
-  
 
-  if(!rightSensor.init()){
-    Serial.println("RIGHT Sensor Failed!");
-    while(true);
+  if (!rightLaser.begin()) {
+    Serial.println("RIGHT sensor failed!");
+    while (true);
   }
 
-  rightSensor.setAddress(RIGHT_SENSOR_ADDRESS);
-  rightSensor.setTimeout(100);
-  rightSensor.startContinuous();
+  // rightLaser.setAddress(RIGHT_SENSOR_ADDRESS);
+  rightLaser.setMeasurementTimingBudgetMicroSeconds(50000);
+  rightLaser.startRangeContinuous(50);
 
-  Serial.println("Laser Sensors are initialized successfully ");
+  Serial.println("Both sensors ready.");
 }
 
-
-
-//this function will give the values in cm 
-void ReadLasers(){
-
-  leftDistance = leftSensor.readRangeContinuousMillimeters() /10.0;
-  rightDistance = rightSensor.readRangeContinuousMillimeters() /10.0;
-
-  Serial.print("Left: ");
-  Serial.print(leftDistance);
-  Serial.print("cm ");
-
-  Serial.print("| Right: ");
-  Serial.print(rightDistance);
-  Serial.println(" cm");
+// ==================== MPU Functions ================
+void DMPDataReady() {
+  isMPUInterrupted = true;
 }
-bool isWallFront(){
-  return digitalRead(IR_PIN) == LOW;
+
+// Update MPU6050 Readings
+void UpdateMPU_6050() {
+  if (!isDMPReady) {
+    return;
+  }
+
+  if (mpu.dmpGetCurrentFIFOPacket(FIFOBuffer)) {
+
+    mpu.dmpGetQuaternion(&q, FIFOBuffer);
+    mpu.dmpGetGravity(&gravity, &q);
+    mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
+
+    //convert the radian to degree
+    yawAngle = ypr[0] * 180 / M_PI;
+  }
 }
-void leftMotor(int speed ){
-  //the function logic is depends on speed 
-  /*
-    speed = 0 stop motors 
-    speed > 0 move forward
-    speed < 0 move backward 
-  */
-  if(speed > 0){ //move forward 
+
+// ==================== LED Function ================
+void Blink(int times) {
+
+  for (int i = 0; i < times; i++) {
+
+    digitalWrite(LED_PIN, HIGH);
+    delay(1);
+    digitalWrite(LED_PIN, LOW); 
+    delay(1);
+  }
+}
+
+// ==================== Motor Functions ================
+void MotorForward(int speed, Motor motor) {
+
+  speed = constrain(speed, 0, 255);
+
+  if (motor == LEFT) {
+
     digitalWrite(IN1_L, LOW);
     digitalWrite(IN2_L, HIGH);
-  }else if (speed < 0 ){ //move backward 
-    digitalWrite(IN1_L, HIGH);
-    digitalWrite(IN2_L, LOW);
-  }else if(speed == 0){ //stop
-    digitalWrite(IN1_L, LOW);
-    digitalWrite(IN2_L, LOW);
-  }
-  //assign the speed as a PWM 
-  analogWrite(ENA_L, abs(speed));
+    analogWrite(ENA_L, speed);
+  } else {
 
-}
-void rightMotor(int speed){
-  //the function logic is depends on speed 
-  /*
-    speed = 0 stop motors 
-    speed > 0 move forward
-    speed < 0 move backward 
-  */
-  if(speed > 0){ //move forward 
     digitalWrite(IN1_R, LOW);
     digitalWrite(IN2_R, HIGH);
-  }else if (speed < 0 ){ //move backward 
+    analogWrite(ENA_R, speed);
+  }
+}
+
+void MotorBackward(int speed, Motor motor) {
+
+  speed = constrain(speed, 0, 255);
+
+  if (motor == LEFT) {
+
+    digitalWrite(IN1_L, HIGH);
+    digitalWrite(IN2_L, LOW);
+    analogWrite(ENA_L, speed);
+  } else {
+
     digitalWrite(IN1_R, HIGH);
     digitalWrite(IN2_R, LOW);
-  }else if(speed == 0){ //stop
+    analogWrite(ENA_R, speed);
+  }
+}
+
+void StopMotor(Motor motor) {
+
+  if (motor == LEFT) {
+
+    digitalWrite(IN1_L, LOW);
+    digitalWrite(IN2_L, LOW);
+    analogWrite(ENA_L, 0);
+  } else {
+
     digitalWrite(IN1_R, LOW);
     digitalWrite(IN2_R, LOW);
+    analogWrite(ENA_R, 0);
   }
-  //assign the speed as a PWM 
-  analogWrite(ENA_R, abs(speed));
-}
-void setMotorsSpeed(int leftMotorSpeed, int rightMotorSpeed){
-  leftMotor(leftMotorSpeed);
-  rightMotor(rightMotorSpeed);
-}
-void ResetEncoders(){
-  leftEncoderCount = 0 ;
-  rightEncoderCount = 0;
 }
 
-void moveStraight(float distance_cm){
+void StopBothMotors()
+{
+  StopMotor(LEFT);
+  StopMotor(RIGHT);
+}
+
+// ==================== Read Functions =================
+// Read Left Distance in cm
+float ReadLeftDistance() {
+uint16_t distance = leftLaser.readRange();
+
+return distance / 10.0;
+}
+
+float ReadRightDistance() {
+uint16_t distance = rightLaser.readRange();
+
+return distance / 10.0;
+}
+
+void UpdateLasers()
+{
+  leftWallDistance = ReadLeftDistance();
+  rightWallDistance = ReadRightDistance();
+}
+
+// ==================== Write Functions ================
+void WriteLeftDistance(float distance)
+{
+  Serial.print("Left Laser: ");
+  Serial.print(distance, 2);
+  Serial.print("cm ");
+
+}
+
+void WriteRightDistance(float distance)
+{
+  Serial.print(" | Right Laser: ");
+  Serial.print(distance, 2);
+  Serial.println("cm");
+}
+
+void WriteLeftEncoder()
+{
+  Serial.print("Left Encoder: ");
+  Serial.print(leftEncoderCount);
+}
+
+void WriteRightEncoder()
+{
+  Serial.print(" | Right Encoder: ");
+  Serial.println(rightEncoderCount);
+}
+
+// ==================== BlueTooth Write Functions =================
+void WriteLeftDistanceBlueTooth(float distance)
+{
+  SerialBT.print("Left Laser: ");
+  SerialBT.print(distance, 2);
+  SerialBT.print("cm ");
+
+}
+
+void WriteRightDistanceBlueTooth(float distance)
+{
+  SerialBT.print(" | Right Laser: ");
+  SerialBT.print(distance, 2);
+  SerialBT.println("cm");
+}
+
+void WriteEncoderValuesBlueTooth()
+{
+  SerialBT.print("Left Encoder: ");
+  SerialBT.print(leftEncoderCount);
+
+  SerialBT.print(" | Right Encoder: ");
+  SerialBT.println(rightEncoderCount);
+}
+
+void WriteMPUValuesBlueTooth()
+{
+  SerialBT.print("Yaw: ");
+  SerialBT.print(yawAngle);
+
+  SerialBT.print(" | Yaw Error: ");
+  SerialBT.println(turnError);
+}
+
+// ==================== Control Functions =================
+void TurnRight90() {
+  // Stop before starting the turn
+  StopBothMotors();
+  delay(100);
+
+  // Find new Direction
+  LocalDirectionStates newDirection = (LocalDirectionStates)((CurrentDirection + 1) % 4);
+
+  // Turn to target Yaw
+  TurnToYaw(directionYaw[newDirection]);
+
+  // Update Current Direction
+  CurrentDirection = newDirection;
+}
+
+void TurnLeft90() {
+
+  StopBothMotors();
+  delay(100);
+
+  LocalDirectionStates newDirection = (LocalDirectionStates)((CurrentDirection + 3) % 4);
+
+  TurnToYaw(directionYaw[newDirection]);
+  CurrentDirection = newDirection;
+}
+
+void MoveStraight(float targetDistance_cm)
+{
+  StopBothMotors();
+  CorrectRotation();
   ResetEncoders();
-  wallCorrection = 0;
-  encoderCorrection = 0;
-  
-  long targetTicks = distanceToTicks(distance_cm); //this will convert the ditance into encoders ticks
-  setMotorsSpeed(110,110);
-  while(true){
-    noInterrupts();
 
+  long targetTicks = CalculateTargetTicks(targetDistance_cm);
+
+  I_Encoder = 0;
+  encoderPrevError = 0;
+
+  moveDistancePrevError = targetTicks;
+  moveDistancePrevTime = millis();
+
+  prevTime = millis();
+
+  while (true)
+  {
     long leftTicks = leftEncoderCount;
-    long rightTicks= rightEncoderCount;
-    interrupts();
-    long avgTicks = (leftTicks + rightTicks )/ 2; 
+    long rightTicks = rightEncoderCount;
 
-    if(avgTicks >= targetTicks){
+    long avgTicks = GetAverageEncoderTicks();
+
+    float distanceError =
+      CalculateError(targetTicks, avgTicks);
+
+    if (distanceError <= DISTANCE_TOLERANCE)
+    {
+      StopBothMotors();
+      delay(100);
       break;
     }
 
-    //Encoders Correction 
-    encodersCorrection(leftTicks, rightTicks);
+    float currentSpeed = CalculateMoveDistancePID(distanceError);
 
-    ReadLasers();
-    //Lasers Correction 
-    lasersCorrection();
+    encoderError = CalculateError(leftTicks, rightTicks);
 
-    //Synchronized The motors  Speed 
-    syncMotors();
+    unsigned long currentTime = millis();
+    float dt = CalculateDT(currentTime, prevTime);
+
+    prevTime = currentTime;
+
+    float straightCorrection = CalculateEncoderPID(encoderError, dt);
+
+    int leftSpeed = (int)(currentSpeed - straightCorrection);
+    int rightSpeed = (int)(currentSpeed + straightCorrection);
+
+    leftSpeed = constrain(leftSpeed, 0, 180);
+    rightSpeed = constrain(rightSpeed, 0, 180);
+
+    MotorForward(leftSpeed, LEFT);
+    MotorForward(rightSpeed, RIGHT);
   }
-  setMotorsSpeed(0,0); // stop the motors
-  delay(globalDelay);
 
+  StopBothMotors();
+
+  CorrectOffset();
+
+  StopBothMotors();
 }
 
-//this function is like a P-Controller for the encodres and motors speed 
-//and we used it to  synchronized the motors speed 
-void encodersCorrection(const long leftTicks, const long rightTicks){
+// Turn to specific Yaw
+void TurnToYaw(float targetYaw) {
 
-  long encoderError = leftTicks - rightTicks;
+  // Reset Turn PID
+  I_mpu = 0;
+  turnPrevError = 0;
+  bool firstSample = true;
+  unsigned long prevTime = millis();
 
-  encoderCorrection = SYNC_KP * encoderError; 
+  while (true) {
+    // UPDATE MPU6050
+    UpdateMPU_6050();
 
-  encoderCorrection = constrain(
-    encoderCorrection, -SYNC_MAX_CORRECTION, SYNC_MAX_CORRECTION
-  ); // this will put an limit on the encoderCorrection value to be from -val to +val we init before 
+    // Calculate Error
+    turnError = NormalizeAngle(targetYaw - yawAngle);
 
+    // Check if we reached target
+    if (abs(turnError) <= TURN_TOLERANCE) {
 
+      StopBothMotors();
+      delay(50);
+
+      // Take another reading
+      UpdateMPU_6050();
+
+      turnError = NormalizeAngle(targetYaw - yawAngle);
+
+      if (abs(turnError) <= TURN_TOLERANCE) {
+        break;
+      }
+    }
+
+    // Calculate DT for the derivative function
+    unsigned long currentTime = millis();
+    float dt = CalculateDT(currentTime, prevTime);
+
+    prevTime = currentTime;
+
+    // FIRST SAMPLE
+    if (firstSample) {
+      turnPrevError = turnError;
+      firstSample = false;
+    }
+
+    float output = CalculateTurnPID(turnError, dt);
+
+    // Debugging
+    // Serial.print("Yaw: ");
+    // Serial.print(yawAngle, 2);
+
+    // Serial.print(" | Error: ");
+    // Serial.print(turnError, 2);
+
+    // Serial.print(" | Output: ");
+    // Serial.println(output, 2);
+
+    // Minimum effective speed
+    if (abs(output) < TURN_MIN_EFFECTIVE_SPEED) {
+      output = (output < 0) ? -TURN_MIN_EFFECTIVE_SPEED : TURN_MIN_EFFECTIVE_SPEED;
+    }
+
+    // Motor Speed
+    int speed = (int)abs(output);
+
+    // Turn Direction
+    if (output > 0) {
+      // Turn right
+      MotorForward(speed, LEFT);
+      MotorBackward(speed, RIGHT);
+    } else {
+      // Turn left
+      MotorBackward(speed, LEFT);
+      MotorForward(speed, RIGHT);
+    }
+  }
+
+  // Turn finished
+  Blink(1);
+
+  StopBothMotors();
+
+  delay(100);
 }
-void lasersCorrection(){
-  
-  wallCorrection = 0;
-  wallError = 0;
 
-  bool validateLeft = leftDistance > MIN_WALL_DISTANCE && leftDistance < MAX_WALL_DISTANCE;
-  bool validateRight= rightDistance > MIN_WALL_DISTANCE && rightDistance < MAX_WALL_DISTANCE;
+void LaserCoordinator()
+{
+  float leftDistance = ReadLeftDistance();
+  float rightDistance = ReadRightDistance();
 
-  if(validateLeft && validateRight){ //this case is betweeen 2 walls 
+  // Reset encoder distance
+  ResetEncoders();
 
-    wallError = leftDistance - rightDistance;
+  // Reset Laser PID
+  I_laser = 0;
+  laserPrevError = 0;
+  laserPrevTime = millis();
 
-  }else if (validateLeft && !validateRight){ //this case is for left wall and free-wall Right side 
+  // Both walls detected
+  if (leftDistance <= 8 && rightDistance <= 8)
+  {
+    while (TargetDistance())
+    {
+      OutError effecterror = OutputErrorForlaser();
 
-    wallError = leftDistance - TARGET_WALL_DISTANCE;
+      MotorForward(effecterror.leftSpeed, LEFT);
+      MotorForward(effecterror.rightSpeed, RIGHT);
+    }
+  }
+  // Left wall detected
+  else if (leftDistance <= 8 && rightDistance >= 8)
+  {
+    while (TargetDistance())
+    {
+      OutError effecterror = OutputErrorForLeftWall();
 
-  }else if (!validateLeft && validateRight){ //this case is for right wall and free-wall left side
+      MotorForward(effecterror.leftSpeed, LEFT);
+      MotorForward(effecterror.rightSpeed, RIGHT);
+    }
+  }
+  // Right wall detected
+  else if (leftDistance >= 8 && rightDistance <= 8)
+  {
+    while (TargetDistance())
+    {
+      OutError effecterror = OutputErrorForRightWall();
 
-    wallError = rightDistance - TARGET_WALL_DISTANCE; 
+      MotorForward(effecterror.leftSpeed,LEFT);
+      MotorForward(effecterror.rightSpeed,RIGHT);
+    }
+  }
+}
+
+// ==================== Accuracy Improvement Functions ====================
+// Correct robot orientation before moving
+void CorrectRotation()
+{
+  StopBothMotors();
+
+  delay(100);
+
+  TurnToYaw(directionYaw[CurrentDirection]);
+}
+
+// Correct robot offset from the walls
+void CorrectOffset()
+{
+  ResetEncoders();  
+
+  UpdateLasers();
+
+  // Left wall
+  if (leftWallDistance < 6)
+  {
+    if (leftWallDistance < 4)
+    {
+      bool goingForward = true;
+
+      while (leftWallDistance < 5)
+      {
+        UpdateLasers();
+
+        long avgTicks = GetAverageEncoderTicks();
+
+        if (avgTicks < 100 && goingForward)
+        {
+          MotorForward(140, LEFT);
+          MotorForward(110, RIGHT);
+        }
+        else if (avgTicks > 0)
+        {
+          if (goingForward)
+            CorrectRotation();
+
+          goingForward = false;
+
+          MotorBackward(135, LEFT);
+          MotorBackward(100, RIGHT);
+        }
+        else
+        {
+          CorrectRotation();
+          goingForward = true;
+        }
+      }
+
+      while (GetAverageEncoderTicks() > 0)
+      {
+        MotorBackward(105, LEFT);
+        MotorBackward(105, RIGHT);
+      }
+
+      while (GetAverageEncoderTicks() < 0)
+      {
+        MotorForward(110, LEFT);
+        MotorForward(110, RIGHT);
+      }
+
+      CorrectRotation();
+
+      StopBothMotors();
+    }
+  }
+  // Right wall
+  else
+  {
+    float rightDistance = ReadRightDistance();
+
+    if (rightDistance < 6)
+    {
+      bool goingForward = true;
+
+      while (rightDistance < 6)
+      {
+        UpdateLasers();
+
+        rightDistance = ReadRightDistance();
+
+        long avgTicks = GetAverageEncoderTicks();
+
+        if (avgTicks < 100 && goingForward)
+        {
+          MotorForward(110, LEFT);
+          MotorForward(160, RIGHT);
+        }
+        else if (avgTicks > 0)
+        {
+          if (goingForward)
+            CorrectRotation();
+
+          goingForward = false;
+
+          MotorBackward(110, LEFT);
+          MotorBackward(140, RIGHT);
+        }
+        else
+        {
+          CorrectRotation();
+          goingForward = true;
+        }
+      }
+
+      while (GetAverageEncoderTicks() > 0)
+      {
+        MotorBackward(105, LEFT);
+        MotorBackward(105, RIGHT);
+      }
+
+      while (GetAverageEncoderTicks() < 0)
+      {
+        MotorForward(110, LEFT);
+        MotorForward(110, RIGHT);
+      }
+
+      CorrectRotation();
+
+      StopBothMotors();
+    }
+  }
+}
+
+// ==================== Functions =================
+// Calculate Delta Time
+float CalculateDT(unsigned long currentTime, unsigned long prevTime)
+{
+  float dt = (currentTime - prevTime) / 1000.0;
+
+  if (dt <= 0)
+  {
+    dt = 0.001;
+  }
+
+  return dt;
+}
+
+long CalculateTargetTicks(float targetDistance_cm)
+{
+  float ticksPerRev = encoderPolesCount * 2 * motorGearRatio;
+  float wheelCircumference_cm = PI * wheelDiameter;
+  long targetTicks = ((targetDistance_cm / wheelCircumference_cm) * ticksPerRev);
+  return targetTicks;
+}
+
+float CalculateError(float desiredValue, float measuredValue)
+{
+  return (desiredValue - measuredValue);
+}
+
+bool TargetDistance()
+{
+  float ticksPerRev = encoderPolesCount * 2 * motorGearRatio;
+  float wheelCircumference_cm = PI * wheelDiameter;
+  long targetTicks = (long)((targetDistance_cm / wheelCircumference_cm) * ticksPerRev);
+  long avgTicks = GetAverageEncoderTicks();
+
+  if (avgTicks >= targetTicks) {
+    StopBothMotors();
+
+    return false;
+  } else {
+    return true;
+  }
+}
+
+// Normalize Angle
+float NormalizeAngle(float angle) {
+  if (angle > 180)
+    angle -= 360;
+
+  if (angle < -180)
+    angle += 360;
+
+  return angle;
+}
+
+void DetectedFront() {
+
+  while (IsFrontWallDetected()) {
+    StopBothMotors();
+
+    delay(100);
+  }
+}
+
+void ResetEncoders()
+{
+    portENTER_CRITICAL(&leftEncoderMux);
+    leftEncoderCount = 0;
+    portEXIT_CRITICAL(&leftEncoderMux);
+
+    portENTER_CRITICAL(&rightEncoderMux);
+    rightEncoderCount = 0;
+    portEXIT_CRITICAL(&rightEncoderMux);
+}
+
+long GetAverageEncoderTicks() {
+  return (leftEncoderCount + rightEncoderCount) / 2;
+}
+
+bool IsFrontWallDetected() {
+  return (digitalRead(IR_pin) == LOW);
+}
+
+// ==================== Laser Error Functions ====================
+OutError OutputErrorForlaser()
+{
+  float leftDistance = ReadLeftDistance();
+  float rightDistance = ReadRightDistance();
+
+  if (leftDistance <= 0 || rightDistance <= 0)
+  {
+    StopBothMotors();
+    return {0, 0};
+  }
+
+  laserError = CalculateError(rightDistance, leftDistance);
+
+  unsigned long currentTime = millis();
+
+  float dt = CalculateDT(currentTime, laserPrevTime);
+
+  laserPrevTime = currentTime;
+  float output = CalculateLaserPID(laserError, dt);
+
+  int leftSpeed = baseSpeed - output;
+  int rightSpeed = baseSpeed + output;
+
+  leftSpeed = constrain(leftSpeed, 0, 180);
+  rightSpeed = constrain(rightSpeed, 0, 180);
+
+  return {leftSpeed, rightSpeed};
+}
+
+OutError OutputErrorForLeftWall()
+{
+  float leftDistance = ReadLeftDistance();
+
+  if (leftDistance <= 0)
+  {
+    StopBothMotors();
+    return {0, 0};
+  }
+
+  laserError = CalculateError(targetWallDistance, leftDistance);
+
+  unsigned long currentTime = millis();
+  float dt = CalculateDT(currentTime, laserPrevTime);
+
+  laserPrevTime = currentTime;
+
+  float output = CalculateLaserPID(laserError, dt);
+
+  int leftSpeed = baseSpeed - output;
+  int rightSpeed = baseSpeed + output;
+
+  leftSpeed = constrain(leftSpeed, 0, 180);
+  rightSpeed = constrain(rightSpeed, 0, 180);
+
+  return {leftSpeed, rightSpeed};
+}
+
+OutError OutputErrorForRightWall()
+{
+  float rightDistance = ReadRightDistance();
+  if (rightDistance <= 0)
+  {
+    StopBothMotors();
+    return {0, 0};
+  }
+
+  laserError = CalculateError(targetWallDistance, rightDistance);
+
+  unsigned long currentTime = millis();
+  float dt = CalculateDT(currentTime, laserPrevTime);
+
+  laserPrevTime = currentTime;
+
+  float output = CalculateLaserPID(laserError, dt);
+
+  int leftSpeed = baseSpeed + output;
+  int rightSpeed = baseSpeed - output;
+
+  leftSpeed = constrain(leftSpeed, 0, 180);
+  rightSpeed = constrain(rightSpeed, 0, 180);
+
+  return {leftSpeed, rightSpeed};
+}
+
+// ==================== PID Functions =================
+float CalculateEncoderPID(float error, float dt) {
+
+    // PID
+    P_Encoder = error * Kp_Encoder;
+    I_Encoder += dt * Ki_Encoder * error;
+    I_Encoder = constrain(I_Encoder, -maxPID_Out, maxPID_Out);
+    D_Encoder = ((error - encoderPrevError) / dt) * Kd_Encoder;
+
+    encoderPrevError = error;
+
+    return constrain(P_Encoder + I_Encoder + D_Encoder, -maxPID_Out, maxPID_Out);    
     
-  }else{ //free wall in the right side and left side 
-    wallError = 0;
+}
+
+float CalculateTurnPID(float error, float dt)
+{
+
+  P_mpu = Kp_turn * error;
+  I_mpu += error * dt;
+  I_mpu = constrain(I_mpu, -TURN_INTEGRAL_LIMIT, TURN_INTEGRAL_LIMIT);
+  D_mpu = Kd_turn * ((error - turnPrevError) / dt);
+
+  turnPrevError = error;
+
+  // PID Output
+  float output = P_mpu + (Ki_turn * I_mpu) + D_mpu;
+
+  // Limit Output
+  output = constrain(output, -TURN_SPEED_MAX, TURN_SPEED_MAX);
+
+  return output;
+}
+
+float CalculateLaserPID(float error, float dt)
+{
+
+  P_laser = Kp_distance * error;
+  I_laser += error * dt * Ki_distance;
+  I_laser = constrain(I_laser, -distance_INTEGRAL_LIMIT, distance_INTEGRAL_LIMIT);
+  D_laser = Kd_distance * ((error - laserPrevError) / dt);
+
+  laserPrevError = error;
+
+  // PID output
+  float output = P_laser + I_laser + D_laser;
+
+  output = constrain(output, -distance_PID_MAX, distance_PID_MAX);
+
+  return output;
+}
+
+float CalculateMoveDistancePID(float distanceError)
+{
+  unsigned long currentDistanceTime = millis();
+
+  float dtDistance = CalculateDT(currentDistanceTime, moveDistancePrevTime);
+
+  float distanceDerivative = (distanceError - moveDistancePrevError) / dtDistance;
+
+  float distanceOutput =
+    Kp_moveDistance * distanceError +
+    Kd_moveDistance * distanceDerivative;
+
+  moveDistancePrevError = distanceError;
+  moveDistancePrevTime = currentDistanceTime;
+
+  return constrain(
+    distanceOutput,
+    MIN_MOVE_SPEED,
+    baseSpeed
+  );
+}
+
+
+
+// ==================== Maze Flood-Fill (FirstRun) ================
+// Ported from your API-based micromouse logic. Same algorithm/idea,
+// only the hardware calls (API::wallFront/Right/Left, API::MoveForward,
+// API::turnRight/turnLeft) were swapped for this robot's own functions.
+
+void MazeLog(const String &text)
+{
+  Serial.println(text);
+}
+
+// Wall-present helpers matching API::wallFront()/wallRight()/wallLeft()
+// semantics: true = wall detected, false = free.
+bool WallFrontPresent()
+{
+  return IsFrontWallDetected();
+}
+
+bool WallLeftPresent()
+{
+  float d = ReadLeftDistance();
+  if (d <= 0) return true; // treat bad reading as a wall (safe default)
+  return d <= WALL_DETECTED;
+}
+
+bool WallRightPresent()
+{
+  float d = ReadRightDistance();
+  if (d <= 0) return true; // treat bad reading as a wall (safe default)
+  return d <= WALL_DETECTED;
+}
+
+void CorrectDirection(char globalDirection)
+{
+    if (up)
+    {
+        if (globalDirection == 'R')
+        {
+            TurnRight90();
+            up = 0;
+            rgt = 1;
+        }
+        else if (globalDirection == 'D')
+        {
+            TurnRight90();
+            TurnRight90();
+            up = 0;
+            down = 1;
+        }
+        else if (globalDirection == 'L')
+        {
+            TurnLeft90();
+            up = 0;
+            lft = 1;
+        }
+    }
+    else if (rgt)
+    {
+        if (globalDirection == 'U')
+        {
+            TurnLeft90();
+            up = 1;
+            rgt = 0;
+        }
+        else if (globalDirection == 'D')
+        {
+            TurnRight90();
+            rgt = 0;
+            down = 1;
+        }
+        else if (globalDirection == 'L')
+        {
+            TurnRight90();
+            TurnRight90();
+            rgt = 0;
+            lft = 1;
+        }
+    }
+    else if (lft)
+    {
+        if (globalDirection == 'U')
+        {
+            TurnRight90();
+            up = 1;
+            lft = 0;
+        }
+        else if (globalDirection == 'D')
+        {
+            TurnLeft90();
+            lft = 0;
+            down = 1;
+        }
+        else if (globalDirection == 'R')
+        {
+            TurnRight90();
+            TurnRight90();
+            lft = 0;
+            rgt = 1;
+        }
+    }
+    else if (down)
+    {
+        if (globalDirection == 'L')
+        {
+            TurnRight90();
+            down = 0;
+            lft = 1;
+        }
+        else if (globalDirection == 'R')
+        {
+            TurnLeft90();
+            down = 0;
+            rgt = 1;
+        }
+        else if (globalDirection == 'U')
+        {
+            TurnRight90();
+            TurnRight90();
+            down = 0;
+            up = 1;
+        }
+    }
+}
+
+void MoveForward(int x, int y, char globalDirection)
+{
+    if (globalDirection == 'R')
+    {
+        parent[x][y] = {x, y - 2};
+    }
+    else if (globalDirection == 'L')
+    {
+        parent[x][y] = {x, y + 2};
+    }
+    else if (globalDirection == 'U')
+    {
+        parent[x][y] = {x + 2, y};
+    }
+    else if (globalDirection == 'D')
+    {
+        parent[x][y] = {x - 2, y};
+    }
+
+    mazeSt.push({x, y});
+    vis[x][y] = 1;
+
+    CorrectDirection(globalDirection);
+
+    MoveStraight(Step);
+}
+
+void MoveToPrevCell(int &x, int &y)
+{
+    while (parent[x][y].first != -1)
+    {
+        int parent_x = parent[x][y].first;
+        int parent_y = parent[x][y].second;
+
+        char backDirection;
+
+        if (parent_x == x && parent_y == y - 2)
+            backDirection = 'L';
+        else if (parent_x == x && parent_y == y + 2)
+            backDirection = 'R';
+        else if (parent_x == x - 2 && parent_y == y)
+            backDirection = 'U';
+        else if (parent_x == x + 2 && parent_y == y)
+            backDirection = 'D';
+        else
+            return;
+
+        CorrectDirection(backDirection);
+        MoveStraight(Step);
+
+        x = parent_x;
+        y = parent_y;
+
+        for (int k = 0; k < 4; ++k)
+        {
+            int xx = x + dx[k];
+            int yy = y + dy[k];
+
+            if (xx >= 0 && yy >= 0 &&
+                xx < N && yy < N &&
+                !vis[xx][yy])
+            {
+                if (GlobalDirection[k] == 'R')
+                {
+                    if (maze[x][y + 1] == 1)
+                    {
+                        MoveForward(x, y + 2, 'R');
+                        return;
+                    }
+                }
+                else if (GlobalDirection[k] == 'L')
+                {
+                    if (maze[x][y - 1] == 1)
+                    {
+                        MoveForward(x, y - 2, 'L');
+                        return;
+                    }
+                }
+                else if (GlobalDirection[k] == 'U')
+                {
+                    if (maze[x - 1][y] == 1)
+                    {
+                        MoveForward(x - 2, y, 'U');
+                        return;
+                    }
+                }
+                else if (GlobalDirection[k] == 'D')
+                {
+                    if (maze[x + 1][y] == 1)
+                    {
+                        MoveForward(x + 2, y, 'D');
+                        return;
+                    }
+                }
+            }
+        }
+    }
+}
+
+// first run
+void FirstRun()
+{
+    int beg_x = N - 1, beg_y = 0;
+
+    mazeSt.push({beg_x, beg_y});
+    vis[beg_x][beg_y] = true;
+
+    while (!mazeSt.empty())
+    {
+        // Print the Values Each time it move a cell
+        WriteLeftDistanceBlueTooth(ReadLeftDistance()); 
+        WriteRightDistanceBlueTooth(ReadLeftDistance());
+        WriteEncoderValuesBlueTooth();
+        WriteMPUValuesBlueTooth();
+
+        int x = mazeSt.top().first;
+        int y = mazeSt.top().second;
+
+        mazeSt.pop();
+
+        bool nwf = !WallFrontPresent(); // 0-> wall , 1-> free
+        bool nwr = !WallRightPresent();
+        bool nwl = !WallLeftPresent();
+
+        if (up)
+        {
+            if (x - 1 >= 0)
+                maze[x - 1][y] = nwf;
+            if (y + 1 < N)
+                maze[x][y + 1] = nwr;
+            if (y - 1 >= 0)
+                maze[x][y - 1] = nwl;
+
+            if (x - 2 >= 0 and nwf and !vis[x - 2][y])
+                MoveForward(x - 2, y, 'U');
+            else if (y + 2 < N and nwr and !vis[x][y + 2])
+                MoveForward(x, y + 2, 'R');
+            else if (y - 2 >= 0 and nwl and !vis[x][y - 2])
+                MoveForward(x, y - 2, 'L');
+            else
+                MoveToPrevCell(x, y);
+        }
+        else if (down)
+        {
+            if (x + 1 < N)
+                maze[x + 1][y] = nwf;
+            if (y + 1 < N)
+                maze[x][y + 1] = nwl;
+            if (y - 1 >= 0)
+                maze[x][y - 1] = nwr;
+
+            if (x + 2 < N and nwf and !vis[x + 2][y])
+                MoveForward(x + 2, y, 'D');
+            else if (y - 2 >= 0 and nwr and !vis[x][y - 2])
+                MoveForward(x, y - 2, 'L');
+            else if (y + 2 < N and nwl and !vis[x][y + 2])
+                MoveForward(x, y + 2, 'R');
+            else
+                MoveToPrevCell(x, y);
+        }
+        else if (rgt)
+        {
+            if (y + 1 < N)
+                maze[x][y + 1] = nwf;
+            if (x + 1 < N)
+                maze[x + 1][y] = nwr;
+            if (x - 1 >= 0)
+                maze[x - 1][y] = nwl;
+
+            if (y + 2 < N and nwf and !vis[x][y + 2])
+                MoveForward(x, y + 2, 'R');
+            else if (x + 2 < N and nwr and !vis[x + 2][y])
+                MoveForward(x + 2, y, 'D');
+            else if (x - 2 >= 0 and nwl and !vis[x - 2][y])
+                MoveForward(x - 2, y, 'U');
+            else
+                MoveToPrevCell(x, y);
+        }
+        else if (lft)
+        {
+            if (y - 1 >= 0)
+                maze[x][y - 1] = nwf;
+            if (x - 1 >= 0)
+                maze[x - 1][y] = nwr;
+            if (x + 1 < N)
+                maze[x][y + 1] = nwl;
+
+            if (y - 2 >= 0 and nwf and !vis[x][y - 2])
+                MoveForward(x, y - 2, 'L');
+            else if (x - 2 >= 0 and nwr and !vis[x - 2][y])
+                MoveForward(x - 2, y, 'U');
+            else if (x + 2 < N and nwl and !vis[x + 2][y])
+                MoveForward(x, y + 2, 'D');
+            else
+                MoveToPrevCell(x, y);
+        }
+    }
+}
+
+// ==================== Maze Flood-Fill (SecondRun) ================
+void SecondRun()
+{
+    int beg_x = N - 1, beg_y = 0;
+
+    vector<vector<pair<int, int>>> bfsParent(N, vector<pair<int, int>>(N, {-1, -1}));
+    vector<vector<bool>> visited(N, vector<bool>(N, false));
+
+    queue<pair<int, int>> q;
+    q.push({beg_x, beg_y});
+    visited[beg_x][beg_y] = true;
+
+    // Center goal cells, computed generically from N (works for any odd N = 2*cells - 1)
+    int half = (N - 1) / 2;
+    vector<pair<int, int>> goals = {
+        {half - 1, half - 1}, {half - 1, half + 1},
+        {half + 1, half - 1}, {half + 1, half + 1}
+    };
+
+    pair<int, int> goalCell = {-1, -1};
+    bool found = false;
+
+    while (!q.empty() && !found)
+    {
+        
+        int x = q.front().first;
+        int y = q.front().second;
+        q.pop();
+
+        for (int k = 0; k < 4 && !found; ++k)
+        {
+            int xx = x + dx[k];
+            int yy = y + dy[k];
+
+            if (xx < 0 || yy < 0 || xx >= N || yy >= N) continue;
+            if (visited[xx][yy]) continue;
+
+            bool open = false;
+            if (GlobalDirection[k] == 'R')      open = (maze[x][y + 1] == 1);
+            else if (GlobalDirection[k] == 'L') open = (maze[x][y - 1] == 1);
+            else if (GlobalDirection[k] == 'U') open = (maze[x - 1][y] == 1);
+            else if (GlobalDirection[k] == 'D') open = (maze[x + 1][y] == 1);
+
+            if (open)
+            {
+                visited[xx][yy] = true;
+                bfsParent[xx][yy] = {x, y};
+                q.push({xx, yy});
+
+                for (auto &g : goals)
+                {
+                    if (xx == g.first && yy == g.second)
+                    {
+                        found = true;
+                        goalCell = {xx, yy};
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    if (!found)
+    {
+        MazeLog("SecondRun: no path to goal found");
+        return;
+    }
+
+    // Reconstruct path start -> goal
+    vector<pair<int, int>> path;
+    path.push_back(goalCell);
+    pair<int, int> cur = goalCell;
+
+    while (!(cur.first == beg_x && cur.second == beg_y))
+    {
+        cur = bfsParent[cur.first][cur.second];
+        path.push_back(cur);
+    }
+    reverse(path.begin(), path.end());
+
+    MazeLog("SecondRun: shortest path length = " + String((int)path.size() - 1));
+
+    // Drive the robot along the path
+    for (size_t i = 1; i < path.size(); ++i)
+    {
+        int x0 = path[i - 1].first, y0 = path[i - 1].second;
+        int x1 = path[i].first,     y1 = path[i].second;
+
+        char dir;
+        if (x1 == x0 - 2 && y1 == y0)      dir = 'U';
+        else if (x1 == x0 + 2 && y1 == y0) dir = 'D';
+        else if (y1 == y0 + 2 && x1 == x0) dir = 'R';
+        else if (y1 == y0 - 2 && x1 == x0) dir = 'L';
+        else continue; // shouldn't happen with a valid BFS path
+
+        CorrectDirection(dir);
+        MoveStraight(Step);
+    }
+}
+
+
+// ============================================================================
+// NEW 3-RUN FLOOD-FILL ALGORITHM
+// ============================================================================
+// This is the user's new algorithm adapted to the robot's existing maze
+// representation:
+//
+//   Logical cells are:
+//     (14,0), (14,2), ... , (0,14)
+//   A movement of one logical cell changes x/y by 2.
+//   The values between cells in maze[][] store the wall/open-road information.
+//
+// The old FirstRun() and SecondRun() functions are NOT used by setup anymore.
+// This section uses the new algorithm's:
+//   1. FIRST_EXPLORATION
+//   2. SECOND_EXPLORATION
+//   3. SPEED_RUN
+//
+// The physical robot is returned to the start between runs instead of using
+// the simulator reset button.
+
+// -------------------- New Algorithm State --------------------
+
+const int NEW_CELL_COUNT = 8;
+const int NEW_CELL_MIN = 0;
+const int NEW_CELL_MAX = 14;
+const int NEW_INF = 999;
+
+int newFlood[NEW_CELL_COUNT][NEW_CELL_COUNT];
+bool newKnown[NEW_CELL_COUNT][NEW_CELL_COUNT][4] = {};
+bool newWalls[NEW_CELL_COUNT][NEW_CELL_COUNT][4] = {};
+bool newVisited[NEW_CELL_COUNT][NEW_CELL_COUNT] = {};
+bool newTraveled[NEW_CELL_COUNT][NEW_CELL_COUNT][4] = {};
+
+int newMouseX = 7;
+int newMouseY = 0;
+
+// Direction order:
+// 0 = U, 1 = R, 2 = D, 3 = L
+const char NEW_DIRECTIONS[4] = {'U', 'R', 'D', 'L'};
+
+const int NEW_GOAL_COUNT = 4;
+
+// Logical 8x8 center cells.
+// In the physical maze representation these are:
+// (6,6), (6,8), (8,6), (8,8).
+const int NEW_GOAL_X[NEW_GOAL_COUNT] = {3, 3, 4, 4};
+const int NEW_GOAL_Y[NEW_GOAL_COUNT] = {3, 4, 3, 4};
+
+
+// Convert logical cell index 0..7 to the existing maze coordinate 0..14.
+int NewGridToMaze(int cell)
+{
+  return cell * 2;
+}
+
+// Convert existing maze coordinate 0,2,...,14 to logical 0..7.
+int NewMazeToGrid(int coordinate)
+{
+  return coordinate / 2;
+}
+
+
+// -------------------- New Algorithm Basic Helpers --------------------
+
+bool NewInBounds(int x, int y)
+{
+  return x >= 0 && x < NEW_CELL_COUNT &&
+         y >= 0 && y < NEW_CELL_COUNT;
+}
+
+
+bool NewIsGoal(int x, int y)
+{
+  for (int i = 0; i < NEW_GOAL_COUNT; i++)
+  {
+    if (x == NEW_GOAL_X[i] && y == NEW_GOAL_Y[i])
+      return true;
   }
-  wallCorrection = WALL_KP * wallError;
 
-  wallCorrection = constrain(
-      wallCorrection, -MAX_WALL_CORRECTION, MAX_WALL_CORRECTION
-    );
+  return false;
 }
 
-void syncMotors(){
-  int leftSpeed = baseSpeed - encoderCorrection - wallCorrection;
-  int rightSpeed = baseSpeed + encoderCorrection + wallCorrection;
 
-  leftSpeed = constrain(leftSpeed, 0, 255);
-  rightSpeed= constrain(rightSpeed, 0, 255);
+void NewGetNeighbor(
+  int x,
+  int y,
+  char direction,
+  int &nx,
+  int &ny)
+{
+  nx = x;
+  ny = y;
 
-  setMotorsSpeed(leftSpeed, rightSpeed);
+  if (direction == 'U')
+    nx++;
+
+  else if (direction == 'R')
+    ny++;
+
+  else if (direction == 'D')
+    nx--;
+
+  else if (direction == 'L')
+    ny--;
 }
-//Test function for see the wallCorrection 
-// my wall correction is if left > right -> result will be +val -> then will decrease left motor speed and increase right one 
-// else if left < right result will be -val -> then will increase left motor speed and decrease the right one 
-// else the error will be 0 and no correction
-void TESTWallCorrection(){
-  readLasers();
 
-  wallCorrection = 0 ;
-  float wallError = leftDistance - rightDistrance;
 
-  wallCorrection  = WALL_KP * wallError ;
-   wallCorrection = constrain(
-        wallCorrection,
-        -WALL_MAX_CORRECTION,
-        WALL_MAX_CORRECTION
-    );
+int NewDirectionIndex(char direction)
+{
+  if (direction == 'U') return 0;
+  if (direction == 'R') return 1;
+  if (direction == 'D') return 2;
+  return 3;
+}
 
-    int leftSpeed =
-        baseSpeed - wallCorrection;
 
-    int rightSpeed =
-        baseSpeed + wallCorrection;
+char NewOppositeDirection(char direction)
+{
+  if (direction == 'U') return 'D';
+  if (direction == 'R') return 'L';
+  if (direction == 'D') return 'U';
+  return 'R';
+}
 
-    leftSpeed = constrain(leftSpeed, 0, 255);
-    rightSpeed = constrain(rightSpeed, 0, 255);
 
-    Serial.print("Left distance: ");
-    Serial.print(leftDistance);
+// -------------------- Wall Memory --------------------
+// The new algorithm keeps its own wall/known/traveled memory.
+// This prevents it from depending on the old FirstRun()/SecondRun()
+// implementation.
 
-    Serial.print(" | Right distance: ");
-    Serial.print(rightDistance);
+void NewRecordWall(int x, int y, char direction)
+{
+  if (!NewInBounds(x, y))
+    return;
 
-    Serial.print(" | Error: ");
-    Serial.print(wallError);
+  int d = NewDirectionIndex(direction);
 
-    Serial.print(" | Correction: ");
-    Serial.print(wallCorrection);
+  newWalls[x][y][d] = true;
+  newKnown[x][y][d] = true;
 
-    Serial.print(" | L speed: ");
-    Serial.print(leftSpeed);
+  int nx, ny;
+  NewGetNeighbor(x, y, direction, nx, ny);
 
-    Serial.print(" | R speed: ");
-    Serial.println(rightSpeed);
+  if (NewInBounds(nx, ny))
+  {
+    int opposite = NewDirectionIndex(
+      NewOppositeDirection(direction));
 
-    SetMotors(leftSpeed, rightSpeed);
+    newWalls[nx][ny][opposite] = true;
+    newKnown[nx][ny][opposite] = true;
+  }
+}
+
+
+void NewRecordOpen(int x, int y, char direction)
+{
+  if (!NewInBounds(x, y))
+    return;
+
+  int d = NewDirectionIndex(direction);
+
+  newWalls[x][y][d] = false;
+  newKnown[x][y][d] = true;
+
+  int nx, ny;
+  NewGetNeighbor(x, y, direction, nx, ny);
+
+  if (NewInBounds(nx, ny))
+  {
+    int opposite = NewDirectionIndex(
+      NewOppositeDirection(direction));
+
+    newWalls[nx][ny][opposite] = false;
+    newKnown[nx][ny][opposite] = true;
+  }
+}
+
+
+void NewMarkTraveled(int x, int y, char direction)
+{
+  if (!NewInBounds(x, y))
+    return;
+
+  int d = NewDirectionIndex(direction);
+  newTraveled[x][y][d] = true;
+
+  int nx, ny;
+  NewGetNeighbor(x, y, direction, nx, ny);
+
+  if (NewInBounds(nx, ny))
+  {
+    int opposite = NewDirectionIndex(
+      NewOppositeDirection(direction));
+
+    newTraveled[nx][ny][opposite] = true;
+  }
+}
+
+
+// -------------------- Flood Initialization --------------------
+
+void InitializeNewAlgorithm()
+{
+  // Start at the bottom-left logical cell.
+  newMouseX = 7;
+  newMouseY = 0;
+
+  // The physical robot starts facing forward/up in the global maze.
+  CurrentDirection = FORWARD_D;
+
+  // Clear all new-algorithm memory.
+  for (int x = 0; x < NEW_CELL_COUNT; x++)
+  {
+    for (int y = 0; y < NEW_CELL_COUNT; y++)
+    {
+      newVisited[x][y] = false;
+
+      for (int d = 0; d < 4; d++)
+      {
+        newKnown[x][y][d] = false;
+        newWalls[x][y][d] = false;
+        newTraveled[x][y][d] = false;
+      }
+    }
+  }
+
+  // Initialize flood values from the four center goals.
+  for (int x = 0; x < NEW_CELL_COUNT; x++)
+  {
+    for (int y = 0; y < NEW_CELL_COUNT; y++)
+    {
+      int best = NEW_INF;
+
+      for (int g = 0; g < NEW_GOAL_COUNT; g++)
+      {
+        int dx = x - NEW_GOAL_X[g];
+        int dy = y - NEW_GOAL_Y[g];
+
+        if (dx < 0) dx = -dx;
+        if (dy < 0) dy = -dy;
+
+        int distance = dx + dy;
+
+        if (distance < best)
+          best = distance;
+      }
+
+      newFlood[x][y] = best;
+    }
+  }
+
+  // Mark the four goals in the simulator-style way.
+  for (int i = 0; i < NEW_GOAL_COUNT; i++)
+  {
+    int gx = NewGridToMaze(NEW_GOAL_X[i]);
+    int gy = NewGridToMaze(NEW_GOAL_Y[i]);
+
+    MazeLog("Goal: (" + String(gx) + "," + String(gy) + ")");
+  }
+
+  MazeLog("New 3-run algorithm initialized.");
+}
+
+
+// -------------------- Sensing --------------------
+
+void NewMarkVisited(int x, int y)
+{
+  if (!NewInBounds(x, y))
+    return;
+
+  newVisited[x][y] = true;
+
+ 
+}
+
+
+void NewSenseWalls(int x, int y)
+{
+  // The robot's current direction is represented by CurrentDirection.
+  //
+  // CurrentDirection:
+  //   FORWARD_D = U
+  //   RIGHT_D   = R
+  //   BACKWARD_D= D
+  //   LEFT_D    = L
+
+  char front = 'U';
+
+  if (CurrentDirection == FORWARD_D)
+    front = 'U';
+  else if (CurrentDirection == RIGHT_D)
+    front = 'R';
+  else if (CurrentDirection == BACKWARD_D)
+    front = 'D';
+  else if (CurrentDirection == LEFT_D)
+    front = 'L';
+
+  char right;
+  char left;
+
+  if (front == 'U')
+  {
+    right = 'R';
+    left = 'L';
+  }
+  else if (front == 'R')
+  {
+    right = 'D';
+    left = 'U';
+  }
+  else if (front == 'D')
+  {
+    right = 'L';
+    left = 'R';
+  }
+  else
+  {
+    right = 'U';
+    left = 'D';
+  }
+
+  // Front sensor.
+  if (WallFrontPresent())
+    NewRecordWall(x, y, front);
+  else
+    NewRecordOpen(x, y, front);
+
+  // Left laser.
+  if (WallLeftPresent())
+    NewRecordWall(x, y, left);
+  else
+    NewRecordOpen(x, y, left);
+
+  // Right laser.
+  if (WallRightPresent())
+    NewRecordWall(x, y, right);
+  else
+    NewRecordOpen(x, y, right);
+}
+
+
+// -------------------- Reflood --------------------
+// This is the same flood-fill idea as the new algorithm:
+// update a cell to min(open neighbor flood) + 1 until stable.
+
+void NewReflood()
+{
+  bool changed = true;
+
+  while (changed)
+  {
+    changed = false;
+
+    for (int x = 0; x < NEW_CELL_COUNT; x++)
+    {
+      for (int y = 0; y < NEW_CELL_COUNT; y++)
+      {
+        if (NewIsGoal(x, y))
+          continue;
+
+        int minimum = NEW_INF;
+
+        for (int d = 0; d < 4; d++)
+        {
+          char direction = NEW_DIRECTIONS[d];
+
+          int nx, ny;
+          NewGetNeighbor(
+            x, y, direction, nx, ny);
+
+          if (!NewInBounds(nx, ny))
+            continue;
+
+          if (newWalls[x][y][d])
+            continue;
+
+          if (newFlood[nx][ny] < minimum)
+            minimum = newFlood[nx][ny];
+        }
+
+        if (minimum < NEW_INF &&
+            newFlood[x][y] != minimum + 1)
+        {
+          newFlood[x][y] = minimum + 1;
+          changed = true;
+        }
+      }
+    }
+  }
+}
+
+
+// -------------------- Direction Selection --------------------
+
+bool NewGetBestDirection(
+  int x,
+  int y,
+  bool preferUnexplored,
+  bool confirmedOnly,
+  char &bestDirection)
+{
+  int bestValue = NEW_INF;
+  char candidates[4];
+  int candidateCount = 0;
+
+  // Find the smallest flood value among allowed neighbors.
+  for (int d = 0; d < 4; d++)
+  {
+    char direction = NEW_DIRECTIONS[d];
+
+    int nx, ny;
+    NewGetNeighbor(
+      x, y, direction, nx, ny);
+
+    if (!NewInBounds(nx, ny))
+      continue;
+
+    if (newWalls[x][y][d])
+      continue;
+
+    if (confirmedOnly &&
+        !newKnown[x][y][d])
+    {
+      continue;
+    }
+
+    if (newFlood[nx][ny] < bestValue)
+      bestValue = newFlood[nx][ny];
+  }
+
+  if (bestValue >= NEW_INF)
+    return false;
+
+  // Keep every direction having the same best flood value.
+  for (int d = 0; d < 4; d++)
+  {
+    char direction = NEW_DIRECTIONS[d];
+
+    int nx, ny;
+    NewGetNeighbor(
+      x, y, direction, nx, ny);
+
+    if (!NewInBounds(nx, ny))
+      continue;
+
+    if (newWalls[x][y][d])
+      continue;
+
+    if (confirmedOnly &&
+        !newKnown[x][y][d])
+    {
+      continue;
+    }
+
+    if (newFlood[nx][ny] == bestValue)
+      candidates[candidateCount++] = direction;
+  }
+
+  // Run 2 preference:
+  // first prefer roads that have not been traveled,
+  // then prefer cells that have not been visited.
+  if (preferUnexplored)
+  {
+    for (int i = 0; i < candidateCount; i++)
+    {
+      char direction = candidates[i];
+
+      int d = NewDirectionIndex(direction);
+
+      if (!newTraveled[x][y][d])
+      {
+        bestDirection = direction;
+        return true;
+      }
+    }
+
+    for (int i = 0; i < candidateCount; i++)
+    {
+      char direction = candidates[i];
+
+      int nx, ny;
+      NewGetNeighbor(
+        x, y, direction, nx, ny);
+
+      if (!newVisited[nx][ny])
+      {
+        bestDirection = direction;
+        return true;
+      }
+    }
+  }
+
+  // Normal flood-fill tie breaking.
+  bestDirection = candidates[0];
+  return true;
+}
+
+
+// -------------------- Physical Movement --------------------
+
+void NewFaceDirection(char target)
+{
+  char current = 'U';
+
+  if (CurrentDirection == FORWARD_D)
+    current = 'U';
+  else if (CurrentDirection == RIGHT_D)
+    current = 'R';
+  else if (CurrentDirection == BACKWARD_D)
+    current = 'D';
+  else if (CurrentDirection == LEFT_D)
+    current = 'L';
+
+  if (current == target)
+    return;
+
+  if (current == 'U')
+  {
+    if (target == 'R')
+      TurnRight90();
+    else if (target == 'D')
+    {
+      TurnRight90();
+      TurnRight90();
+    }
+    else if (target == 'L')
+      TurnLeft90();
+  }
+  else if (current == 'R')
+  {
+    if (target == 'D')
+      TurnRight90();
+    else if (target == 'L')
+    {
+      TurnRight90();
+      TurnRight90();
+    }
+    else if (target == 'U')
+      TurnLeft90();
+  }
+  else if (current == 'D')
+  {
+    if (target == 'L')
+      TurnRight90();
+    else if (target == 'U')
+    {
+      TurnRight90();
+      TurnRight90();
+    }
+    else if (target == 'R')
+      TurnLeft90();
+  }
+  else if (current == 'L')
+  {
+    if (target == 'U')
+      TurnRight90();
+    else if (target == 'R')
+    {
+      TurnRight90();
+      TurnRight90();
+    }
+    else if (target == 'D')
+      TurnLeft90();
+  }
+}
+
+
+void NewMoveForward(
+  int &x,
+  int &y,
+  char direction)
+{
+  int oldX = x;
+  int oldY = y;
+
+  NewFaceDirection(direction);
+
+  // Use the robot's existing distance controller.
+  MoveStraight(Step);
+
+  NewMarkTraveled(
+    oldX,
+    oldY,
+    direction);
+
+  NewGetNeighbor(
+    oldX,
+    oldY,
+    direction,
+    x,
+    y);
+}
+
+
+// -------------------- Exploration --------------------
+
+bool NewRunExploration(NewRunMode mode)
+{
+  bool preferUnexplored =
+    (mode == SECOND_EXPLORATION);
+
+  while (!NewIsGoal(
+    newMouseX,
+    newMouseY))
+  {
+    NewMarkVisited(
+      newMouseX,
+      newMouseY);
+
+    NewSenseWalls(
+      newMouseX,
+      newMouseY);
+
+    NewReflood();
+
+    char bestDirection;
+
+    if (!NewGetBestDirection(
+      newMouseX,
+      newMouseY,
+      preferUnexplored,
+      false,
+      bestDirection))
+    {
+      MazeLog("ERROR: no available direction during exploration.");
+      StopBothMotors();
+      return false;
+    }
+
+    NewMoveForward(
+      newMouseX,
+      newMouseY,
+      bestDirection);
+  }
+
+  NewMarkVisited(
+    newMouseX,
+    newMouseY);
+
+  NewSenseWalls(
+    newMouseX,
+    newMouseY);
+
+  NewReflood();
+
+  return true;
+}
+
+
+// -------------------- Confirmed-Path Flood --------------------
+
+bool NewIsConfirmedOpen(
+  int x,
+  int y,
+  char direction)
+{
+  int nx, ny;
+
+  NewGetNeighbor(
+    x, y, direction, nx, ny);
+
+  if (!NewInBounds(nx, ny))
+    return false;
+
+  int d = NewDirectionIndex(direction);
+
+  return newKnown[x][y][d] &&
+         !newWalls[x][y][d];
+}
+
+
+void NewCalculateFinalFlood()
+{
+  // Start from infinity.
+  for (int x = 0; x < NEW_CELL_COUNT; x++)
+  {
+    for (int y = 0; y < NEW_CELL_COUNT; y++)
+      newFlood[x][y] = NEW_INF;
+  }
+
+  // Multi-source BFS from the four center goals.
+  int queueX[NEW_CELL_COUNT * NEW_CELL_COUNT];
+  int queueY[NEW_CELL_COUNT * NEW_CELL_COUNT];
+
+  int head = 0;
+  int tail = 0;
+
+  for (int i = 0; i < NEW_GOAL_COUNT; i++)
+  {
+    int gx = NEW_GOAL_X[i];
+    int gy = NEW_GOAL_Y[i];
+
+    newFlood[gx][gy] = 0;
+
+    queueX[tail] = gx;
+    queueY[tail] = gy;
+    tail++;
+  }
+
+  while (head < tail)
+  {
+    int x = queueX[head];
+    int y = queueY[head];
+    head++;
+
+    for (int d = 0; d < 4; d++)
+    {
+      char direction = NEW_DIRECTIONS[d];
+
+      if (!NewIsConfirmedOpen(
+        x, y, direction))
+      {
+        continue;
+      }
+
+      int nx, ny;
+      NewGetNeighbor(
+        x, y, direction, nx, ny);
+
+      int nextValue =
+        newFlood[x][y] + 1;
+
+      if (nextValue < newFlood[nx][ny])
+      {
+        newFlood[nx][ny] = nextValue;
+
+        queueX[tail] = nx;
+        queueY[tail] = ny;
+        tail++;
+      }
+    }
+  }
+}
+
+
+// -------------------- Final Speed Run --------------------
+
+bool NewRunSpeedRun()
+{
+  NewCalculateFinalFlood();
+
+  if (newFlood[newMouseX][newMouseY] >= NEW_INF)
+  {
+    MazeLog("ERROR: no confirmed path from start to goal.");
+    StopBothMotors();
+    return false;
+  }
+
+  while (!NewIsGoal(
+    newMouseX,
+    newMouseY))
+  {
+   
+
+    char bestDirection;
+
+    if (!NewGetBestDirection(
+      newMouseX,
+      newMouseY,
+      false,
+      true,
+      bestDirection))
+    {
+      MazeLog("ERROR: no confirmed direction during speed run.");
+      StopBothMotors();
+      return false;
+    }
+
+    int nx, ny;
+
+    NewGetNeighbor(
+      newMouseX,
+      newMouseY,
+      bestDirection,
+      nx,
+      ny);
+
+    if (newFlood[nx][ny] !=
+        newFlood[newMouseX][newMouseY] - 1)
+    {
+      MazeLog("ERROR: final flood invariant broken.");
+      StopBothMotors();
+      return false;
+    }
+
+    NewMoveForward(
+      newMouseX,
+      newMouseY,
+      bestDirection);
+  }
+
+ 
+
+  StopBothMotors();
+
+  return true;
+}
+
+
+// -------------------- Return Robot To Start --------------------
+// This replaces the simulator's waitForManualReset().
+// The maze memory is preserved, but the physical robot drives back to
+// the start before the next algorithm phase.
+
+void NewReturnToStart()
+{
+  // We know the robot reached a center goal.
+  // Build a confirmed shortest path from the current goal back to start.
+
+  int startX = 7;
+  int startY = 0;
+
+  int parentX[NEW_CELL_COUNT][NEW_CELL_COUNT];
+  int parentY[NEW_CELL_COUNT][NEW_CELL_COUNT];
+  bool seen[NEW_CELL_COUNT][NEW_CELL_COUNT];
+
+  for (int x = 0; x < NEW_CELL_COUNT; x++)
+  {
+    for (int y = 0; y < NEW_CELL_COUNT; y++)
+    {
+      parentX[x][y] = -1;
+      parentY[x][y] = -1;
+      seen[x][y] = false;
+    }
+  }
+
+  int queueX[NEW_CELL_COUNT * NEW_CELL_COUNT];
+  int queueY[NEW_CELL_COUNT * NEW_CELL_COUNT];
+
+  int head = 0;
+  int tail = 0;
+
+  queueX[tail] = newMouseX;
+  queueY[tail] = newMouseY;
+  tail++;
+
+  seen[newMouseX][newMouseY] = true;
+
+  bool found = false;
+
+  while (head < tail && !found)
+  {
+    int x = queueX[head];
+    int y = queueY[head];
+    head++;
+
+    if (x == startX && y == startY)
+    {
+      found = true;
+      break;
+    }
+
+    for (int d = 0; d < 4; d++)
+    {
+      char direction = NEW_DIRECTIONS[d];
+
+      if (!NewIsConfirmedOpen(
+        x, y, direction))
+      {
+        continue;
+      }
+
+      int nx, ny;
+
+      NewGetNeighbor(
+        x, y, direction, nx, ny);
+
+      if (!seen[nx][ny])
+      {
+        seen[nx][ny] = true;
+
+        parentX[nx][ny] = x;
+        parentY[nx][ny] = y;
+
+        queueX[tail] = nx;
+        queueY[tail] = ny;
+        tail++;
+      }
+    }
+  }
+
+  if (!found)
+  {
+    MazeLog("ERROR: cannot return to start.");
+    StopBothMotors();
+    return;
+  }
+
+  // Reconstruct current -> start, then reverse it.
+  int pathX[NEW_CELL_COUNT * NEW_CELL_COUNT];
+  int pathY[NEW_CELL_COUNT * NEW_CELL_COUNT];
+
+  int pathLength = 0;
+
+  int x = startX;
+  int y = startY;
+
+  pathX[pathLength] = x;
+  pathY[pathLength] = y;
+  pathLength++;
+
+  while (!(x == newMouseX && y == newMouseY))
+  {
+    int px = parentX[x][y];
+    int py = parentY[x][y];
+
+    if (px < 0 || py < 0)
+    {
+      MazeLog("ERROR: invalid return path.");
+      StopBothMotors();
+      return;
+    }
+
+    x = px;
+    y = py;
+
+    pathX[pathLength] = x;
+    pathY[pathLength] = y;
+    pathLength++;
+  }
+
+  // path currently goes start -> goal.
+  // Execute it backwards: goal -> start.
+  for (int i = pathLength - 1; i > 0; i--)
+  {
+    int x0 = pathX[i];
+    int y0 = pathY[i];
+
+    int x1 = pathX[i - 1];
+    int y1 = pathY[i - 1];
+
+    char direction;
+
+    if (x1 == x0 + 1 && y1 == y0)
+      direction = 'U';
+    else if (x1 == x0 - 1 && y1 == y0)
+      direction = 'D';
+    else if (y1 == y0 + 1 && x1 == x0)
+      direction = 'R';
+    else if (y1 == y0 - 1 && x1 == x0)
+      direction = 'L';
+    else
+    {
+      MazeLog("ERROR: invalid return movement.");
+      StopBothMotors();
+      return;
+    }
+
+    // Use the same movement function as the new algorithm.
+    NewMoveForward(
+      newMouseX,
+      newMouseY,
+      direction);
+  }
+
+  // Make sure the software position is exactly the start.
+  newMouseX = startX;
+  newMouseY = startY;
+
+  MazeLog("Returned to START.");
 }
