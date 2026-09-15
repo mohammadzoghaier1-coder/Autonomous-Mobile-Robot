@@ -55,7 +55,7 @@ using namespace std;
 int encoderPolesCount = 14;
 float motorGearRatio = 29;
 float wheelDiameter = 4.6;  //cm
-float baseSpeed = 145;
+float baseSpeed = 140;
 
 const int Step = 22;
 const int WALL_DETECTED = 10;
@@ -112,7 +112,7 @@ VectorFloat gravity;
 float euler[3];
 float ypr[3];
 
-struct OutError 
+struct MotorSpeed 
 {
   float leftSpeed;
   float rightSpeed;
@@ -208,7 +208,7 @@ unsigned long moveDistancePrevTime = 0;
 // ==================== Maze Flood-Fill Variables ================
 // enter n : n = (maze length )^2 - 1
 // test for 16*16 maze
-const int N = 5;
+const int N = 15;
 
 vector<vector<int>> maze(N, vector<int>(N, 0));
 vector<vector<bool>> vis(N, vector<bool>(N, false));  
@@ -320,26 +320,24 @@ void setup() {
 
 // ==================== Loop Function ================
 void loop() {
-  // LaserCoordinator();
-
   //  WriteLeftDistance(ReadLeftDistance());
   //  WriteRightDistance(ReadRightDistance());
   
   // WriteLeftEncoder();
   // WriteRightEncoder();
 
-    // WriteLeftDistanceBlueTooth(ReadLeftDistance()); 
-    // WriteRightDistanceBlueTooth(ReadLeftDistance());
+  // WriteLeftDistanceBlueTooth(ReadLeftDistance()); 
+  // WriteRightDistanceBlueTooth(ReadLeftDistance());
 
   // Serial.print("LEFT: ");
   // Serial.print(ReadLeftDistance());
   // Serial.print("     | Right: ");
   // Serial.println(ReadRightDistance());
   // Serial.println("=================================================");
-  // OutputErrorForLeftWall();
+  // CalculateLeftWallSpeed();
   // Serial.print("error LEFT:    ");
   // Serial.println(error);
-  // OutputErrorForRightWall();
+  // CalculateRightWallSpeed();
   // Serial.print("error RIGHT:    ");
   // Serial.println(error);
 }
@@ -786,6 +784,12 @@ void MoveStraight(float targetDistance_cm)
 
     MotorForward(leftSpeed, LEFT);
     MotorForward(rightSpeed, RIGHT);
+
+    if(IsFrontWallDetected())
+    {
+      StopBothMotors();
+      delay(100);
+    }
   }
 
   StopBothMotors();
@@ -897,7 +901,7 @@ void LaserCoordinator()
   {
     while (TargetDistance())
     {
-      OutError effecterror = OutputErrorForlaser();
+      MotorSpeed effecterror = CalculateLaserSpeed();
 
       MotorForward(effecterror.leftSpeed, LEFT);
       MotorForward(effecterror.rightSpeed, RIGHT);
@@ -908,7 +912,7 @@ void LaserCoordinator()
   {
     while (TargetDistance())
     {
-      OutError effecterror = OutputErrorForLeftWall();
+      MotorSpeed effecterror = CalculateLeftWallSpeed();
 
       MotorForward(effecterror.leftSpeed, LEFT);
       MotorForward(effecterror.rightSpeed, RIGHT);
@@ -919,7 +923,7 @@ void LaserCoordinator()
   {
     while (TargetDistance())
     {
-      OutError effecterror = OutputErrorForRightWall();
+      MotorSpeed effecterror = CalculateRightWallSpeed();
 
       MotorForward(effecterror.leftSpeed,LEFT);
       MotorForward(effecterror.rightSpeed,RIGHT);
@@ -941,8 +945,7 @@ void CorrectRotation()
 // Correct robot offset from the walls
 void CorrectOffset()
 {
-  ResetEncoders();  
-
+  ResetEncoders(); 
   UpdateLasers();
 
   // Left wall
@@ -960,7 +963,7 @@ void CorrectOffset()
 
         if (avgTicks < 100 && goingForward)
         {
-          MotorForward(140, LEFT);
+          MotorForward(130, LEFT);
           MotorForward(110, RIGHT);
         }
         else if (avgTicks > 0)
@@ -971,7 +974,7 @@ void CorrectOffset()
           goingForward = false;
 
           MotorBackward(135, LEFT);
-          MotorBackward(100, RIGHT);
+          MotorBackward(110, RIGHT);
         }
         else
         {
@@ -1109,15 +1112,6 @@ float NormalizeAngle(float angle) {
   return angle;
 }
 
-void DetectedFront() {
-
-  while (IsFrontWallDetected()) {
-    StopBothMotors();
-
-    delay(100);
-  }
-}
-
 void ResetEncoders()
 {
     portENTER_CRITICAL(&leftEncoderMux);
@@ -1138,7 +1132,7 @@ bool IsFrontWallDetected() {
 }
 
 // ==================== Laser Error Functions ====================
-OutError OutputErrorForlaser()
+MotorSpeed CalculateLaserSpeed()
 {
   float leftDistance = ReadLeftDistance();
   float rightDistance = ReadRightDistance();
@@ -1167,7 +1161,7 @@ OutError OutputErrorForlaser()
   return {leftSpeed, rightSpeed};
 }
 
-OutError OutputErrorForLeftWall()
+MotorSpeed CalculateLeftWallSpeed()
 {
   float leftDistance = ReadLeftDistance();
 
@@ -1195,7 +1189,7 @@ OutError OutputErrorForLeftWall()
   return {leftSpeed, rightSpeed};
 }
 
-OutError OutputErrorForRightWall()
+MotorSpeed CalculateRightWallSpeed()
 {
   float rightDistance = ReadRightDistance();
   if (rightDistance <= 0)
