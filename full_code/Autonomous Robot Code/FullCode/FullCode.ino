@@ -55,9 +55,9 @@ using namespace std;
 int encoderPolesCount = 14;
 float motorGearRatio = 29;
 float wheelDiameter = 4.6;  //cm
-float baseSpeed = 140;
+float baseSpeed = 135;
 
-const int Step = 22;
+const int Step = 23;
 const int WALL_DETECTED = 10;
 
 float targetDistance_cm = Step;
@@ -311,7 +311,7 @@ void setup() {
 
   WriteMazeBlueTooth();
 
-  up = 1;
+  up = 1;                                           
   down = 0;
   delay(1000);
   MazeLog("Starting Second Run....");
@@ -739,6 +739,7 @@ void MoveStraight(float targetDistance_cm)
   ResetEncoders();
 
   long targetTicks = CalculateTargetTicks(targetDistance_cm);
+  long halfTargetTicks = targetTicks / 2;
 
   I_Encoder = 0;
   encoderPrevError = 0;
@@ -755,8 +756,7 @@ void MoveStraight(float targetDistance_cm)
 
     long avgTicks = GetAverageEncoderTicks();
 
-    float distanceError =
-      CalculateError(targetTicks, avgTicks);
+    float distanceError = CalculateError(targetTicks, avgTicks);
 
     if (distanceError <= DISTANCE_TOLERANCE)
     {
@@ -765,8 +765,22 @@ void MoveStraight(float targetDistance_cm)
       break;
     }
 
-    float currentSpeed = CalculateMoveDistancePID(distanceError);
+    int currentSpeed;
 
+    if (avgTicks <= halfTargetTicks)
+    {
+      currentSpeed = baseSpeed;
+    }
+    else
+    {
+      float progress = (float)(avgTicks - halfTargetTicks) / (float)(targetTicks - halfTargetTicks);
+
+      progress = constrain(progress, 0.0, 1.0);
+
+      currentSpeed = ((baseSpeed / 1.3) * progress);
+    }
+
+    currentSpeed = constrain(currentSpeed, baseSpeed / 1.3, baseSpeed);
     encoderError = CalculateError(leftTicks, rightTicks);
 
     unsigned long currentTime = millis();
@@ -776,8 +790,8 @@ void MoveStraight(float targetDistance_cm)
 
     float straightCorrection = CalculateEncoderPID(encoderError, dt);
 
-    int leftSpeed = (int)(currentSpeed - straightCorrection);
-    int rightSpeed = (int)(currentSpeed + straightCorrection);
+    int leftSpeed = currentSpeed - straightCorrection;
+    int rightSpeed = currentSpeed + straightCorrection;
 
     leftSpeed = constrain(leftSpeed, 0, 180);
     rightSpeed = constrain(rightSpeed, 0, 180);
@@ -785,19 +799,19 @@ void MoveStraight(float targetDistance_cm)
     MotorForward(leftSpeed, LEFT);
     MotorForward(rightSpeed, RIGHT);
 
-    if(IsFrontWallDetected())
+    if (IsFrontWallDetected())
     {
       StopBothMotors();
       delay(100);
+      break;
     }
   }
 
   StopBothMotors();
-
   CorrectOffset();
-
   StopBothMotors();
 }
+
 
 // Turn to specific Yaw
 void TurnToYaw(float targetYaw) {
@@ -963,7 +977,7 @@ void CorrectOffset()
 
         if (avgTicks < 100 && goingForward)
         {
-          MotorForward(130, LEFT);
+          MotorForward(150, LEFT);
           MotorForward(110, RIGHT);
         }
         else if (avgTicks > 0)
@@ -973,7 +987,7 @@ void CorrectOffset()
 
           goingForward = false;
 
-          MotorBackward(135, LEFT);
+          MotorBackward(150, LEFT);
           MotorBackward(110, RIGHT);
         }
         else
@@ -1001,15 +1015,15 @@ void CorrectOffset()
     }
   }
   // Right wall
-  else
+  else if(WallRightPresent())
   {
     float rightDistance = ReadRightDistance();
 
-    if (rightDistance < 8)
+    if (rightDistance < 5)
     {
       bool goingForward = true;
 
-      while (rightDistance < 6)
+      while (rightDistance < 7)
       {
         UpdateLasers();
 
@@ -1607,6 +1621,7 @@ void FirstRun()
             else
                 MoveToPrevCell(x, y);
         }
+
     }
 }
 
