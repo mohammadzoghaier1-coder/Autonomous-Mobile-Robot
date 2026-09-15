@@ -1,57 +1,235 @@
-//helper file
-#include "I2Cdev.h"
+// Cell Size (24*24)
+// Robot Chassis Diameter 122mm
+// Wheel Diameter 46mm
+// ==================== Libraries ================
 #include "MPU6050_6Axis_MotionApps20.h"
+#include <Adafruit_VL53L0X.h>
+#include "I2Cdev.h"
 #include <Wire.h>
-#include <VL53L0X.h>
-#include <iostream>
-#include <vector> 
+
+#include <vector>
 #include <stack>
-#include <utility> 
-#include <algorithm> 
+#include <queue>
+#include <string>
+#include <utility>
+#include <algorithm>
 #include "BluetoothSerial.h"
- 
 
 using namespace std;
 
-
-// ---- Motor selector ----
-enum Motor { LEFT, RIGHT };
-
-enum LocalDirectionStates { FORWARD_D , RIGHT_D , BACKWARD_D , LEFT_D };
-const float directionYaw[4] = { 0, 90.0, 180.0, 270.0 }; // FORWARD_D, RIGHT_D, BACKWARD_D, LEFT_D
-
-LocalDirectionStates CurrentDirection;
-
-//BT
-BluetoothSerial SerialBT;
-
-//on board LED
-#define LED_PIN 2 
-
-//IR 
-#define IR_PIN 34
-bool wallInFront = false;
-
-// ---- Left motor ----
+// ==================== Pins ================
+// Left Motor
 #define ENA_L 33
 #define IN1_L 26
 #define IN2_L 25
 
-// ---- Right motor ----
+// Right Motor
 #define ENA_R 12
 #define IN1_R 14
 #define IN2_R 27
 
-// ---- Left encoder ----
+// Left Encoder
 #define leftEncoderC1 19
 #define leftEncoderC2 18
-volatile long leftEncoderCount = 0;
-portMUX_TYPE leftEncoderMux = portMUX_INITIALIZER_UNLOCKED;
 
+// Right Encoder
+#define rightEncoderC1 16
+#define rightEncoderC2 17
+
+// Lasers
+#define LEFT_XSHUT_PIN 5
+#define RIGHT_XSHUT_PIN 4
+
+// IR
+#define IR_pin 32
+
+// ON BOARD LED
+#define LED_PIN 2
+
+// Interrupt pin
+#define Interrupt_Pin 15
+
+#define OUTPUT_READABLE_YAWPITCHROLL
+
+// ==================== Constants ================
+int encoderPolesCount = 14;
+float motorGearRatio = 29;
+float wheelDiameter = 4.6;  //cm
+float baseSpeed = 145;
+
+const int Step = 22;
+const int WALL_DETECTED = 10;
+
+float targetDistance_cm = Step;
+float targetWallDistance = 6;
+float leftWallDistance = 0;
+float rightWallDistance = 0;
+
+// Lazers Addresses
+const uint8_t LEFT_SENSOR_ADDRESS = 0x30;
+// const uint8_t RIGHT_SENSOR_ADDRESS = 0x31;
+
+const float directionYaw[4] = {
+  0,
+  90.0,
+  180.0,
+  270.0
+};
+
+// ==================== Variables ================
+// MOTOR SELECTOR
+enum Motor { LEFT, RIGHT };
+enum LocalDirectionStates { FORWARD_D, RIGHT_D, BACKWARD_D, LEFT_D};
+
+portMUX_TYPE leftEncoderMux = portMUX_INITIALIZER_UNLOCKED;
+portMUX_TYPE rightEncoderMux = portMUX_INITIALIZER_UNLOCKED;
+
+LocalDirectionStates CurrentDirection;
+BluetoothSerial SerialBT;
+
+Adafruit_VL53L0X leftLaser;
+Adafruit_VL53L0X rightLaser;
+
+// MPU6050
+MPU6050 mpu;
+float yawAngle;
+
+// MPU6050 Control / Status Variables
+bool isDMPReady = false;
+uint8_t MPUIntStatus;
+uint8_t devStatus;
+uint16_t packetSize;
+uint8_t FIFOBuffer[64];
+
+// Orientation / Motion Variables
+Quaternion q; 
+VectorInt16 aa;
+VectorInt16 gy;
+VectorInt16 aaReal;
+VectorInt16 aaWorld;
+VectorFloat gravity;
+
+float euler[3];
+float ypr[3];
+
+struct MotorSpeed 
+{
+  float leftSpeed;
+  float rightSpeed;
+};
+
+// TEAPOT PACKET
+uint8_t teapotPacket[14] = { '$', 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0x00, 0x00, '\r', '\n' };
+
+// Error tolerance
+float tolerance = 1;
+float error;
+float prevError;
+
+float currentTime;
+float prevTime;
+
+// ==================== Interrupt Variables ================
+// MPU INTERRUPT
+volatile bool isMPUInterrupted = false;
+volatile long leftEncoderCount = 0;
+volatile long rightEncoderCount = 0;
+
+// ==================== PID Parameters ================
+// Move Specific Distance PID
+// Gains
+float Kp_Encoder = 1.75;
+float Ki_Encoder = 0;
+float Kd_Encoder = 0.5;
+
+// Controller signals
+float P_Encoder;
+float I_Encoder;  
+float D_Encoder;
+
+float maxPID_Out = 30;
+
+// Encoder Error
+float encoderError;
+float encoderPrevError;
+
+// Lazers PID
+float Kp_distance = 1.75;
+float Ki_distance = 0.0;
+float Kd_distance = 0.5;
+
+// Controller signals
+float P_laser;
+float I_laser;
+float D_laser;
+
+const float distance_INTEGRAL_LIMIT = 20.0;
+const float distance_PID_MAX = 30.0;
+
+float laserError;
+float laserPrevError;
+unsigned long laserPrevTime;
+
+// TURN PID GAINS
+float Kp_turn = 1.75;
+float Ki_turn = 0.0;
+float Kd_turn = 0.5;
+
+// Controller signals
+float P_mpu;
+float I_mpu;
+float D_mpu;
+
+// LEFT / RIGHT SPEED SYNC
+const unsigned long SYNC_SAMPLE_MS = 20;
+const int SYNC_MAX_CORRECTION = 5;
+const float SYNC_KP = 1.0;
+
+// TURN PID TUNING
+const float TURN_SPEED_MAX = 125.0;
+const float TURN_TOLERANCE = 2;
+const float TURN_MIN_EFFECTIVE_SPEED = 110;
+const float TURN_INTEGRAL_LIMIT = 10.0;
+
+//Error
+float turnError;
+float turnPrevError;
+
+// Movement PID
+float Kp_moveDistance = 0.4;
+float Kd_moveDistance = 0.1;
+
+const float DISTANCE_TOLERANCE = 5.0;
+const int MIN_MOVE_SPEED = 80;
+
+float moveDistancePrevError = 0;
+unsigned long moveDistancePrevTime = 0;
+
+// ==================== Maze Flood-Fill Variables ================
+// enter n : n = (maze length )^2 - 1
+// test for 16*16 maze
+const int N = 15;
+
+vector<vector<int>> maze(N, vector<int>(N, 0));
+vector<vector<bool>> vis(N, vector<bool>(N, false));  
+vector<vector<pair<int, int>>> parent(N, vector<pair<int, int>>(N, {-1, -1}));
+
+int dy[4] = {2, -2, 0, 0};
+int dx[4] = {0, 0, 2, -2};
+
+vector<char> GlobalDirection = {'R', 'L', 'D', 'U'};
+
+stack<pair<int, int>> mazeSt;
+
+bool up = true, down = false, rgt = false, lft = false;
+
+// ==================== ISR Functions ================
+// Left Encoder
 void IRAM_ATTR leftEncoderISR_C1() {
   portENTER_CRITICAL_ISR(&leftEncoderMux);
   bool a = digitalRead(leftEncoderC1);
   bool b = digitalRead(leftEncoderC2);
+
   if (a == b) {
     leftEncoderCount++;
   } else {
@@ -64,6 +242,7 @@ void IRAM_ATTR leftEncoderISR_C2() {
   portENTER_CRITICAL_ISR(&leftEncoderMux);
   bool a = digitalRead(leftEncoderC1);
   bool b = digitalRead(leftEncoderC2);
+
   if (a != b) {
     leftEncoderCount++;
   } else {
@@ -72,18 +251,14 @@ void IRAM_ATTR leftEncoderISR_C2() {
   portEXIT_CRITICAL_ISR(&leftEncoderMux);
 }
 
-// ---- Right encoder ----
-#define rightEncoderC1 16
-#define rightEncoderC2 17
-volatile long rightEncoderCount = 0;
-portMUX_TYPE rightEncoderMux = portMUX_INITIALIZER_UNLOCKED;
-
+// Right Encoder
 void IRAM_ATTR rightEncoderISR_C1() {
   portENTER_CRITICAL_ISR(&rightEncoderMux);
   bool a = digitalRead(rightEncoderC1);
   bool b = digitalRead(rightEncoderC2);
+
   if (a == b) {
-    rightEncoderCount--;  
+    rightEncoderCount--;
   } else {
     rightEncoderCount++;
   }
@@ -94,6 +269,7 @@ void IRAM_ATTR rightEncoderISR_C2() {
   portENTER_CRITICAL_ISR(&rightEncoderMux);
   bool a = digitalRead(rightEncoderC1);
   bool b = digitalRead(rightEncoderC2);
+
   if (a != b) {
     rightEncoderCount--;
   } else {
@@ -102,929 +278,1230 @@ void IRAM_ATTR rightEncoderISR_C2() {
   portEXIT_CRITICAL_ISR(&rightEncoderMux);
 }
 
-
-//lasers
-
-VL53L0X leftLaser;
-VL53L0X rigthLaser;
-
-int secondXshut=4;
-int firstXshut= 5;
-
-float leftWallDistance;
-float rigthWallDistance;
-
-//Move Straight PID and variables
-  //gains
-float Kp=1;
-float Ki=0;
-float Kd=1.2; 
-  //controllers signals
-float P;
-float I;
-float D;
-  //error tolerance
-float tolerance=5;
-  //in PID variables
-float error;
-float prevError;
-float currentTime;
-float prevTime;
-float maxPID_Out=30;
-  //constants
-float wheelDiameter=4.67;//in cm
-int encoderPolesCount=14;
-float motorGearRatio=29;
-float baseSpeed=120;
-float cellLength=23;//in cm
-
-//distance PD
-float Kp_distance = 0.8;
-float Kd_distance = 0.3;
-float previousDistanceError = 0;
-const float DISTANCE_TOLERANCE = 5.0;
-const int MIN_MOVE_SPEED = 80.0; // Minimum motor speed needed to overcome friction
-
-
-
-//MPU6050
-MPU6050 mpu;
-float yawAngle;
-#define OUTPUT_READABLE_YAWPITCHROLL
-int const INTERRUPT_PIN = 15;  // Define the interruption #0 pin
-
-  /*---MPU6050 Control/Status Variables---*/
-bool DMPReady = false;  // Set true if DMP init was successful
-uint8_t MPUIntStatus;   // Holds actual interrupt status byte from MPU
-uint8_t devStatus;      // Return status after each device operation (0 = success, !0 = error)
-uint16_t packetSize;    // Expected DMP packet size (default is 42 bytes)
-uint8_t FIFOBuffer[64]; // FIFO storage buffer
-  /*---Orientation/Motion Variables---*/ 
-Quaternion q;           // [w, x, y, z]         Quaternion container
-VectorInt16 aa;         // [x, y, z]            Accel sensor measurements
-VectorInt16 gy;         // [x, y, z]            Gyro sensor measurements
-VectorInt16 aaReal;     // [x, y, z]            Gravity-free accel sensor measurements
-VectorInt16 aaWorld;    // [x, y, z]            World-frame accel sensor measurements
-VectorFloat gravity;    // [x, y, z]            Gravity vector
-float euler[3];         // [psi, theta, phi]    Euler angle container
-float ypr[3];           // [yaw, pitch, roll]   Yaw/Pitch/Roll container and gravity vector
-  /*-Packet structure for InvenSense teapot demo-*/ 
-uint8_t teapotPacket[14] = { '$', 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0x00, 0x00, '\r', '\n' };
-/*------Interrupt detection routine------*/
-volatile bool MPUInterrupt = false;     // Indicates whether MPU6050 interrupt pin has gone high
-void DMPDataReady() {
-  MPUInterrupt = true;
-}
-
-// ---- Turn tuning (PID) ----
-const float TURN_SPEED_MAX           = 135.0; 
-const float TURN_TOLERANCE           = 1.5;  
-const float TURN_MIN_EFFECTIVE_SPEED = 120;  
-const float TURN_INTEGRAL_LIMIT      = 10.0;  
-
-// PID gains 
-float Kp_turn = 1.6;
-float Ki_turn = 0.0;
-float Kd_turn = 1.2;
-
-
-
-//initialize software
-const int n = 9;
-vector maze(n, vector<int> (n, 0));
-bool up = true, down = false, lft = false, rght = false; // direction of the robot
-string steps = "";
-vector<pair<int, int>> moves = {{-2, 0}, {2, 0}, {0, 2}, {0, -2}};
-vector<char> direction_name = {'U', 'D', 'R', 'L'};
- 
-stack<pair<int, int>> dfs;
-vector vis(n, vector<bool> (n, false));
- 
-
+// ==================== Setup Function ================
 void setup() {
+  
+  SerialBT.begin("Zahtar");
   Serial.begin(115200);
   Wire.begin();
 
-  SerialBT.begin("Qusai");
+  MotorInit();
+  EncoderInit();
+  LaserInit(); 
+  IR_Init();
+  LED_Init();
+  InitializeMPU_6050();
+  InitializeVL53();
 
-  //lasers
-  InitializeTwoLasers();
+  // intterrupt pin
+  pinMode(Interrupt_Pin, INPUT);
+  attachInterrupt(digitalPinToInterrupt(Interrupt_Pin), DMPDataReady, RISING);
+
+  // Set Initial Direction
+  CurrentDirection = FORWARD_D;
+
+  // Run the maze flood-fill exploration once
   
-   //on board LED
-    pinMode(LED_PIN, OUTPUT);
-    digitalWrite(LED_PIN, LOW);
-
-    // motors start
-    pinMode(IN1_L, OUTPUT);
-    pinMode(IN2_L, OUTPUT);
-    pinMode(IN1_R, OUTPUT);
-    pinMode(IN2_R, OUTPUT);
-
-    analogWriteResolution(ENA_R, 8);
-    analogWriteFrequency(ENA_R, 5000);
-
-    analogWriteResolution(ENA_L, 8);
-    analogWriteFrequency(ENA_L, 5000);
-
-
-    stopMotor(LEFT);
-    stopMotor(RIGHT);
-    // motors end
-
-    // encoders start
-    pinMode(leftEncoderC1, INPUT_PULLUP);
-    pinMode(leftEncoderC2, INPUT_PULLUP);
-
-    pinMode(rightEncoderC1, INPUT_PULLUP);
-    pinMode(rightEncoderC2, INPUT_PULLUP);
-
-    attachInterrupt(digitalPinToInterrupt(leftEncoderC1), leftEncoderISR_C1, CHANGE);
-    attachInterrupt(digitalPinToInterrupt(leftEncoderC2), leftEncoderISR_C2, CHANGE);
-
-    attachInterrupt(digitalPinToInterrupt(rightEncoderC1), rightEncoderISR_C1, CHANGE);
-    attachInterrupt(digitalPinToInterrupt(rightEncoderC2), rightEncoderISR_C2, CHANGE);
-  // encoders end
-
-  //MPU_6050 Start
-    InitializeMPU_6050();
-  //MPU_6050 End
-
-
-  //IR START
-    pinMode(IR_PIN,INPUT);
-  //IR END
-
-
-
-
-    //set local direction state to forward
-    CurrentDirection=FORWARD_D;
-
-
+  MazeLog("Running...");
+  MazeLog("Flood Fill Algorithm");
+  FirstRun();
   
-   first_run();
-   //MoveStraight(30);
+  MazeLog("Finished Scanning the maze...");
+  Turn180();
 
+  WriteMazeBlueTooth();
+
+  up = 1;
+  down = 0;
+  delay(1000);
+  MazeLog("Starting Second Run....");
+  SecondRun();
 }
 
+// ==================== Loop Function ================
 void loop() {
+  //  WriteLeftDistance(ReadLeftDistance());
+  //  WriteRightDistance(ReadRightDistance());
+  
+  // WriteLeftEncoder();
+  // WriteRightEncoder();
 
+  // WriteLeftDistanceBlueTooth(ReadLeftDistance()); 
+  // WriteRightDistanceBlueTooth(ReadLeftDistance());
 
-  //debugging encoders
-  Serial.print("left: ");
-  Serial.println(leftEncoderCount);
-  Serial.print("right: ");
-  Serial.println(rightEncoderCount);
-
-  //Debug MPU
-  UpdateMPU_6050();
-  Serial.print("yaw: ");
-  Serial.println(yawAngle);
-
- 
-
-  // //Debug IR
-  // UpdateIR();
-  // Serial.print("frontWall: ");
-  // Serial.println(wallInFront);
-  // delay(100);
-
-
-  UpdateLasers();
-
-  Serial.print("leftLaser distance: ");
-  Serial.println(leftWallDistance);
-
-  Serial.print("rightLaser distance: ");
-  Serial.println(rigthWallDistance);
-
-  //CorrectOffset();
-
-
+  // Serial.print("LEFT: ");
+  // Serial.print(ReadLeftDistance());
+  // Serial.print("     | Right: ");
+  // Serial.println(ReadRightDistance());
+  // Serial.println("=================================================");
+  // CalculateLeftWallSpeed();
+  // Serial.print("error LEFT:    ");
+  // Serial.println(error);
+  // CalculateRightWallSpeed();
+  // Serial.print("error RIGHT:    ");
+  // Serial.println(error);
 }
 
+// ==================== Initializing Functions ================
 
-//initializing the lasers
-void InitializeTwoLasers()
+void MotorInit()
 {
-  pinMode(secondXshut,OUTPUT);
-  digitalWrite(secondXshut, LOW);
-  delay(20);
+  // Initializing motors
+  pinMode(IN1_L, OUTPUT);
+  pinMode(IN2_L, OUTPUT);
 
-  pinMode(firstXshut,OUTPUT);
-  digitalWrite(firstXshut, LOW);
-  delay(20);
-  digitalWrite(firstXshut, HIGH);
+  pinMode(IN1_R, OUTPUT);
+  pinMode(IN2_R, OUTPUT);
 
-  if(!leftLaser.init())
-  {
-    Serial.println("leftLaser sensor failed");
-    while(1);
-  }
-    Serial.println("leftLaser sensor initialized");
-    leftLaser.setAddress(0x30);
-    
-    delay(20);
-    digitalWrite(secondXshut, HIGH);
-      
-    if(!rigthLaser.init())
-    {
-      Serial.println("rigthLaser sensor failed");
-      while(1);
-    }
-    Serial.println("rigthLaser sensor initialized");
+  analogWriteResolution(ENA_R, 8);
+  analogWriteFrequency(ENA_R, 5000);
 
-    leftLaser.startContinuous();
-    rigthLaser.startContinuous();
+  analogWriteResolution(ENA_L, 8);
+  analogWriteFrequency(ENA_L, 5000);
+
+  StopBothMotors();
 }
 
+void EncoderInit()
+{
+  // Initializing ENCODER
+  pinMode(leftEncoderC1, INPUT_PULLUP);
+  pinMode(leftEncoderC2, INPUT_PULLUP);
 
-//MPU 6050 
-  //initialize the MPU 6050
-  void InitializeMPU_6050()
-  {
-    //MPU 6050 START
-    #if I2CDEV_IMPLEMENTATION == I2CDEV_ARDUINO_WIRE
-    Wire.begin();
-    Wire.setClock(400000); // 400kHz I2C clock. Comment on this line if having compilation difficulties
-  #elif I2CDEV_IMPLEMENTATION == I2CDEV_BUILTIN_FASTWIRE
-    Fastwire::setup(400, true);
-  #endif
+  pinMode(rightEncoderC1, INPUT_PULLUP);
+  pinMode(rightEncoderC2, INPUT_PULLUP);
 
-  /*Initialize device*/
+  attachInterrupt(digitalPinToInterrupt(leftEncoderC1), leftEncoderISR_C1, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(leftEncoderC2), leftEncoderISR_C2, CHANGE);
+
+  attachInterrupt(digitalPinToInterrupt(rightEncoderC1), rightEncoderISR_C1, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(rightEncoderC2), rightEncoderISR_C2, CHANGE);
+}
+
+void LaserInit()
+{
+  pinMode(LEFT_XSHUT_PIN, OUTPUT);
+  pinMode(RIGHT_XSHUT_PIN, OUTPUT);
+}
+
+void IR_Init()
+{
+  pinMode(IR_pin, INPUT);
+}
+
+void LED_Init()
+{
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, LOW);
+}
+
+void InitializeMPU_6050() {
+#if I2CDEV_IMPLEMENTATION == I2CDEV_ARDUINO_WIRE
+  
+  Wire.setClock(400000);
+
+#elif I2CDEV_IMPLEMENTATION == I2CDEV_BUILTIN_FASTWIRE
+  Fastwire::setup(400, true);
+
+#endif
+
+  // Initialize Device
   Serial.println(F("Initializing I2C devices..."));
   mpu.initialize();
-  pinMode(INTERRUPT_PIN, INPUT);
 
-  /*Verify connection*/
+  // Verifiy Connection
   Serial.println(F("Testing MPU6050 connection..."));
-  if(mpu.testConnection() == false){
+
+  if (mpu.testConnection() == false) 
+  {
     Serial.println("MPU6050 connection failed");
-    LightUp();
-    while(true);
-  }
-  else {
+    while (true);
+  } 
+  else 
+  {
     Serial.println("MPU6050 connection successful");
     Blink(3);
   }
 
-
-  /* Initializate and configure the DMP*/
+  // Initialize DMP
   Serial.println(F("Initializing DMP..."));
   devStatus = mpu.dmpInitialize();
 
-  /* Supply your gyro offsets here, scaled for min sensitivity */
+  // GYRO / ACCEL OFFSETS
   mpu.setXGyroOffset(0);
   mpu.setYGyroOffset(0);
   mpu.setZGyroOffset(0);
+
   mpu.setXAccelOffset(0);
   mpu.setYAccelOffset(0);
   mpu.setZAccelOffset(0);
 
-  /* Making sure it worked (returns 0 if so) */ 
+  // Check DMP
   if (devStatus == 0) {
-    mpu.CalibrateAccel(6);  // Calibration Time: generate offsets and calibrate our MPU6050
+
+    mpu.CalibrateAccel(6);
     mpu.CalibrateGyro(6);
+
     Serial.println("These are the Active offsets: ");
     mpu.PrintActiveOffsets();
-    Serial.println(F("Enabling DMP..."));   //Turning ON DMP
+
+    Serial.println(F("Enabling DMP..."));
     mpu.setDMPEnabled(true);
 
-    /*Enable esp32 interrupt detection*/
-    attachInterrupt(digitalPinToInterrupt(INTERRUPT_PIN), DMPDataReady, RISING);
+    // ESP32 INTERRUPT
+    
     MPUIntStatus = mpu.getIntStatus();
 
-    /* Set the DMP Ready flag so the main loop() function knows it is okay to use it */
+    // DMP READY
     Serial.println(F("DMP ready! Waiting for first interrupt..."));
-    DMPReady = true;
-    packetSize = mpu.dmpGetFIFOPacketSize(); //Get expected DMP packet size for later comparison
+    isDMPReady = true;
+    packetSize = mpu.dmpGetFIFOPacketSize();
+
     Blink(5);
-    }
-  //MPU 6050 END
+  } else {
+    Serial.print("DMP initialization failed. Code: ");
+    Serial.println(devStatus);
   }
-  //updating the readings
-void UpdateMPU_6050()
-{
-  if (!DMPReady) { LightUp(); return; } // Stop the program if DMP programming fails.
+}
+
+//Initialize Lazers Sensor
+void InitializeVL53() {
+  
+  // Turn both sensors OFF
+  digitalWrite(LEFT_XSHUT_PIN, LOW);
+  delay(20);
+
+  digitalWrite(RIGHT_XSHUT_PIN, LOW);
+  delay(20);
+
+  // Start LEFT sensor
+  digitalWrite(LEFT_XSHUT_PIN, HIGH);
+
+  if (!leftLaser.begin()) {
+    Serial.println("LEFT sensor failed!");
+    while (true);
+  }
+
+  leftLaser.setAddress(LEFT_SENSOR_ADDRESS);
+  leftLaser.setMeasurementTimingBudgetMicroSeconds(50000);
+  leftLaser.startRangeContinuous(50);
+  delay(20);
+
+  // Start RIGHT sensor
+  digitalWrite(RIGHT_XSHUT_PIN, HIGH);
+
+  if (!rightLaser.begin()) {
+    Serial.println("RIGHT sensor failed!");
+    while (true);
+  }
+
+  // rightLaser.setAddress(RIGHT_SENSOR_ADDRESS);
+  rightLaser.setMeasurementTimingBudgetMicroSeconds(50000);
+  rightLaser.startRangeContinuous(50);
+
+  Serial.println("Both sensors ready.");
+}
+
+// ==================== MPU Functions ================
+void DMPDataReady() {
+  isMPUInterrupted = true;
+}
+
+// Update MPU6050 Readings
+void UpdateMPU_6050() {
+  if (!isDMPReady) {
+    return;
+  }
+
   if (mpu.dmpGetCurrentFIFOPacket(FIFOBuffer)) {
+
     mpu.dmpGetQuaternion(&q, FIFOBuffer);
     mpu.dmpGetGravity(&gravity, &q);
     mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
 
+    //convert the radian to degree
     yawAngle = ypr[0] * 180 / M_PI;
-  } 
+  }
 }
 
-//updating lasers readings
-void UpdateLasers()
-{
-    rigthWallDistance=leftLaser.readRangeContinuousMillimeters();
-    leftWallDistance=rigthLaser.readRangeContinuousMillimeters();
-}
-
-//IR
-void UpdateIR()
-{
-  wallInFront = !digitalRead(IR_PIN);
-}
-
-
-
-//on board LED functions
+// ==================== LED Function ================
 void Blink(int times) {
+
   for (int i = 0; i < times; i++) {
+
     digitalWrite(LED_PIN, HIGH);
-    delay(150);
-    digitalWrite(LED_PIN, LOW);
-    delay(150);
+    delay(1);
+    digitalWrite(LED_PIN, LOW); 
+    delay(1);
   }
 }
 
-void LightUp() {
-  digitalWrite(LED_PIN, HIGH);
-}
+// ==================== Motor Functions ================
+void MotorForward(int speed, Motor motor) {
 
-// ---- Motor control functions ----
-void stopMotor(Motor motor) {
-  if (motor == LEFT) {
-    digitalWrite(IN1_L, LOW);
-    digitalWrite(IN2_L, LOW);
-    analogWrite(ENA_L, 0);
-  } else {
-    digitalWrite(IN1_R, LOW);
-    digitalWrite(IN2_R, LOW);
-    analogWrite(ENA_R, 0);
-  }
-}
-
-void motorForward(int speed, Motor motor) {
   speed = constrain(speed, 0, 255);
 
   if (motor == LEFT) {
+
     digitalWrite(IN1_L, LOW);
     digitalWrite(IN2_L, HIGH);
     analogWrite(ENA_L, speed);
   } else {
+
     digitalWrite(IN1_R, LOW);
     digitalWrite(IN2_R, HIGH);
     analogWrite(ENA_R, speed);
   }
 }
 
-void motorBackward(int speed, Motor motor) {
+void MotorBackward(int speed, Motor motor) {
+
   speed = constrain(speed, 0, 255);
 
   if (motor == LEFT) {
+
     digitalWrite(IN1_L, HIGH);
     digitalWrite(IN2_L, LOW);
     analogWrite(ENA_L, speed);
   } else {
+
     digitalWrite(IN1_R, HIGH);
     digitalWrite(IN2_R, LOW);
     analogWrite(ENA_R, speed);
   }
 }
 
+void StopMotor(Motor motor) {
+  if (motor == LEFT) {
 
-//walls check
-bool WallFront()
-{
-  UpdateIR();
-  return wallInFront;
+    digitalWrite(IN1_L, LOW);
+    digitalWrite(IN2_L, LOW);
+    analogWrite(ENA_L, 0);
+  } else {
+
+    digitalWrite(IN1_R, LOW);
+    digitalWrite(IN2_R, LOW);
+    analogWrite(ENA_R, 0);
+  }
 }
 
-bool WallInRight()
+void StopBothMotors()
 {
-  UpdateLasers();
-  if(rigthWallDistance>150)
-    return false;
-  else
-    return true;
+  StopMotor(LEFT);
+  StopMotor(RIGHT);
+}
+
+// ==================== Read Functions =================
+// Read Left Distance in cm
+float ReadLeftDistance() {
+  uint16_t distance = leftLaser.readRange();
+  return distance / 10.0;
+}
+
+float ReadRightDistance() {
+  uint16_t distance = rightLaser.readRange();
+  return distance / 10.0;
+}
+
+void UpdateLasers()
+{
+  leftWallDistance = ReadLeftDistance();
+  rightWallDistance = ReadRightDistance();
+}
+
+// ==================== Write Functions ================
+void WriteLeftDistance(float distance)
+{
+  Serial.print("Left Laser: ");
+  Serial.print(distance, 2);
+  Serial.print("cm ");
+
+}
+
+void WriteRightDistance(float distance)
+{
+  Serial.print(" | Right Laser: ");
+  Serial.print(distance, 2);
+  Serial.println("cm");
+}
+
+void WriteLeftEncoder()
+{
+  Serial.print("Left Encoder: ");
+  Serial.print(leftEncoderCount);
+}
+
+void WriteRightEncoder()
+{
+  Serial.print(" | Right Encoder: ");
+  Serial.println(rightEncoderCount);
+}
+
+// ==================== BlueTooth Write Functions =================
+void WriteLeftDistanceBlueTooth(float distance)
+{
+  SerialBT.print("Left Laser: ");
+  SerialBT.print(distance, 2);
+  SerialBT.print("cm ");
+
+}
+
+void WriteRightDistanceBlueTooth(float distance)
+{
+  SerialBT.print(" | Right Laser: ");
+  SerialBT.print(distance, 2);
+  SerialBT.println("cm");
+}
+
+void WriteEncoderValuesBlueTooth()
+{
+  SerialBT.print("Left Encoder: ");
+  SerialBT.print(leftEncoderCount);
+
+  SerialBT.print(" | Right Encoder: ");
+  SerialBT.println(rightEncoderCount);
+}
+
+void WriteMPUValuesBlueTooth()
+{
+  SerialBT.print("Yaw: ");
+  SerialBT.print(yawAngle);
+
+  SerialBT.print(" | Yaw Error: ");
+  SerialBT.println(turnError);
 }
 
 
-
-bool WallInLeft()
+void WriteMazeBlueTooth()
 {
-    UpdateLasers();
-    if(leftWallDistance>150)
-      return false;
-    else
-      return true;
-}
+  SerialBT.println("Maze:");
 
-
-
-
-
-
-
-//Move Straight, takes distance in cm as input
-void MoveStraight(float targetDistance_cm) {
-  
-  //debugging walls via bluetooth
-  // SerialBT.print("Front: ");
-  // SerialBT.print(WallFront());
-
-  // SerialBT.print("| Left: ");
-  // SerialBT.print(WallInLeft());
-
-  // SerialBT.print("| Right: ");
-  // SerialBT.println(WallInRight());
-
-
-  //delay for debugging 
-  //delay(1000);
-
-  //corrections befre moving 
-  CorrectRotation();
- // delay(250);
-  CorrectOffset();
- // delay(250);
-
-
-
-  leftEncoderCount = 0;
-  rightEncoderCount = 0;
-
-  //resetting moving straight PID
-  I = 0;
-  prevError = 0;
-  prevTime = millis();   
-
-  //resetting distance PID
-  previousDistanceError = 0;
-
-  //calculatting the traget encoders pulses for the desired distance
-  float ticksPerRev = encoderPolesCount* 2 * motorGearRatio; 
-  float wheelCircumference_cm = PI * wheelDiameter;      
-  long targetTicks = (long)((targetDistance_cm / wheelCircumference_cm) * ticksPerRev);
-
-
-  unsigned long previousDistanceTime = millis();
-  // Prevent a D-term spike on the first iteration
-  previousDistanceError = targetTicks;
-
-  while (true) {
-
-        //debugging encoders
-  // Serial.print("left: ");
-  // Serial.println(leftEncoderCount);
-  // Serial.print("right: ");
-  // Serial.println(rightEncoderCount);
-
-
-    long avgTicks = (leftEncoderCount + rightEncoderCount) / 2;
-    
-    // Remaining distance to target
-    float distanceError = targetTicks - avgTicks;
-
-    if (distanceError <= DISTANCE_TOLERANCE) {
-      stopMotor(LEFT);
-      stopMotor(RIGHT);
-      return;
+  for (int i = 0; i < N; i++)
+  {
+    for (int j = 0; j < N; j++)
+    {
+      SerialBT.print(maze[i][j]);
+      SerialBT.print(" ");
     }
 
-
-    //distance PID 
-    unsigned long currentDistanceTime = millis();
-
-    float dtDistance =(currentDistanceTime - previousDistanceTime) / 1000.0;
-
-    if (dtDistance <= 0)dtDistance = 0.001;
-    // D term
-    float distanceDerivative =(distanceError - previousDistanceError) / dtDistance;
-
-
-    // Distance controller output
-    float distanceOutput = Kp_distance * distanceError + Kd_distance * distanceDerivative;
-    // Save values for next iteration
-    previousDistanceError = distanceError;
-    previousDistanceTime = currentDistanceTime;
-
-   //distance PID final output
-    float currentSpeed =constrain(distanceOutput,MIN_MOVE_SPEED,baseSpeed);  
-
-
-    error = leftEncoderCount - rightEncoderCount;
-    currentTime = millis();
-    float dt = currentTime - prevTime;
-    if (dt <= 0) dt = 1;              
-
-    P = error * Kp;
-    I += dt * Ki * error;
-    I = constrain(I, -maxPID_Out, maxPID_Out);   // anti-windup
-    D = ((error - prevError) / dt) * Kd;
-
-    prevError = error;
-    prevTime = currentTime;
-
-    float straightCorrection = constrain(P + I + D, -maxPID_Out, maxPID_Out);
-
-    //combinning the two signals 
-    int leftSpeed =(int)(currentSpeed - straightCorrection);
-    int rightSpeed =(int)(currentSpeed + straightCorrection);
-    motorForward(leftSpeed,LEFT);
-    motorForward(rightSpeed,RIGHT);
-
-
-
-
-
-
-      //if wall in_front
-      UpdateIR();
-      if(wallInFront)
-      {
-          stopMotor(LEFT);
-          stopMotor(RIGHT);
-          return;
-      }
-    
+    SerialBT.println();
   }
-
-
-
 }
 
 
 
+// ==================== Control Functions =================
+void TurnRight90() {
+  // Stop before starting the turn
+  StopBothMotors();
+  delay(100);
 
+  // Find new Direction
+  LocalDirectionStates newDirection = (LocalDirectionStates)((CurrentDirection + 1) % 4);
 
+  // Turn to target Yaw
+  TurnToYaw(directionYaw[newDirection]);
 
-//Rotation Functions
-
-//normalize angle 
-float normalizeAngle(float angle)
-{
-  if (angle > 180) angle -= 360;
-  if (angle < -180) angle += 360;
-  return angle;
+  // Update Current Direction
+  CurrentDirection = newDirection;
 }
 
-//turn to specific angle
-void TurnToYaw(float targetYaw)
+void TurnLeft90() {
+
+  StopBothMotors();
+  delay(100);
+
+  LocalDirectionStates newDirection = (LocalDirectionStates)((CurrentDirection + 3) % 4);
+
+  TurnToYaw(directionYaw[newDirection]);
+  CurrentDirection = newDirection;
+}
+
+
+void Turn180() {
+  StopBothMotors();
+  delay(100);
+
+  LocalDirectionStates newDirection = (LocalDirectionStates)((CurrentDirection + 2) % 4);
+
+  TurnToYaw(directionYaw[newDirection]);
+  CurrentDirection = newDirection;
+
+  StopBothMotors();
+  delay(100);
+}
+
+
+void MoveStraight(float targetDistance_cm)
 {
-  float integral = 0;
-  float prevError = 0;
-  bool firstSample = true;
-  unsigned long prevTime = millis();
+  StopBothMotors();
+  CorrectRotation();
+  ResetEncoders();
+
+  long targetTicks = CalculateTargetTicks(targetDistance_cm);
+
+  I_Encoder = 0;
+  encoderPrevError = 0;
+
+  moveDistancePrevError = targetTicks;
+  moveDistancePrevTime = millis();
+
+  prevTime = millis();
 
   while (true)
   {
+    long leftTicks = leftEncoderCount;
+    long rightTicks = rightEncoderCount;
+
+    long avgTicks = GetAverageEncoderTicks();
+
+    float distanceError =
+      CalculateError(targetTicks, avgTicks);
+
+    if (distanceError <= DISTANCE_TOLERANCE)
+    {
+      StopBothMotors();
+      delay(100);
+      break;
+    }
+
+    float currentSpeed = CalculateMoveDistancePID(distanceError);
+
+    encoderError = CalculateError(leftTicks, rightTicks);
+
+    unsigned long currentTime = millis();
+    float dt = CalculateDT(currentTime, prevTime);
+
+    prevTime = currentTime;
+
+    float straightCorrection = CalculateEncoderPID(encoderError, dt);
+
+    int leftSpeed = (int)(currentSpeed - straightCorrection);
+    int rightSpeed = (int)(currentSpeed + straightCorrection);
+
+    leftSpeed = constrain(leftSpeed, 0, 180);
+    rightSpeed = constrain(rightSpeed, 0, 180);
+
+    MotorForward(leftSpeed, LEFT);
+    MotorForward(rightSpeed, RIGHT);
+
+    if(IsFrontWallDetected())
+    {
+      StopBothMotors();
+      delay(100);
+    }
+  }
+
+  StopBothMotors();
+
+  CorrectOffset();
+
+  StopBothMotors();
+}
+
+// Turn to specific Yaw
+void TurnToYaw(float targetYaw) {
+
+  // Reset Turn PID
+  I_mpu = 0;
+  turnPrevError = 0;
+  bool firstSample = true;
+  unsigned long prevTime = millis();
+
+  while (true) {
+    // UPDATE MPU6050
     UpdateMPU_6050();
 
-    float error = normalizeAngle(targetYaw - yawAngle);
+    // Calculate Error
+    turnError = NormalizeAngle(targetYaw - yawAngle);
 
-    if (abs(error) <= TURN_TOLERANCE)
-    {
-      stopMotor(LEFT);
-      stopMotor(RIGHT);
+    // Check if we reached target
+    if (abs(turnError) <= TURN_TOLERANCE) {
+
+      StopBothMotors();
       delay(50);
 
+      // Take another reading
       UpdateMPU_6050();
-      error = normalizeAngle(targetYaw - yawAngle);
 
-      if (abs(error) <= TURN_TOLERANCE)
-      {
+      turnError = NormalizeAngle(targetYaw - yawAngle);
+
+      if (abs(turnError) <= TURN_TOLERANCE) {
         break;
       }
     }
 
-    unsigned long now = millis();
-    float dt = (now - prevTime) / 1000.0;
-    if (dt <= 0) dt = 0.001; // guard divide-by-zero if two samples land in the same millisecond
-    prevTime = now;
+    // Calculate DT for the derivative function
+    unsigned long currentTime = millis();
+    float dt = CalculateDT(currentTime, prevTime);
 
-    if (firstSample)
-    {
-      prevError = error; // seed it so the first sample doesn't spike the D term
+    prevTime = currentTime;
+
+    // FIRST SAMPLE
+    if (firstSample) {
+      turnPrevError = turnError;
       firstSample = false;
     }
 
-    integral = constrain(integral + error * dt, -TURN_INTEGRAL_LIMIT, TURN_INTEGRAL_LIMIT);
-    float derivative = (error - prevError) / dt;
-    prevError = error;
+    float output = CalculateTurnPID(turnError, dt);
 
-    float output = Kp_turn * error + Ki_turn * integral + Kd_turn * derivative;
-    output = constrain(output, -TURN_SPEED_MAX, TURN_SPEED_MAX);
+    // Debugging
+    // Serial.print("Yaw: ");
+    // Serial.print(yawAngle, 2);
 
-    // motors won't reliably overcome friction below this, so floor the
-    // magnitude while we're still correcting instead of letting it fizzle out
-    if (abs(output) < TURN_MIN_EFFECTIVE_SPEED)
-    {
+    // Serial.print(" | Error: ");
+    // Serial.print(turnError, 2);
+
+    // Serial.print(" | Output: ");
+    // Serial.println(output, 2);
+
+    // Minimum effective speed
+    if (abs(output) < TURN_MIN_EFFECTIVE_SPEED) {
       output = (output < 0) ? -TURN_MIN_EFFECTIVE_SPEED : TURN_MIN_EFFECTIVE_SPEED;
     }
 
-
-
+    // Motor Speed
     int speed = (int)abs(output);
 
-    if (output > 0)
-    {
-      motorForward(speed, LEFT);
-      motorBackward(speed, RIGHT);
-    }
-    else
-    {
-      motorBackward(speed, LEFT);
-      motorForward(speed, RIGHT);  
+    // Turn Direction
+    if (output > 0) {
+      // Turn right
+      MotorForward(speed, LEFT);
+      MotorBackward(speed, RIGHT);
+    } else {
+      // Turn left
+      MotorBackward(speed, LEFT);
+      MotorForward(speed, RIGHT);
     }
   }
 
+  // Turn finished
   Blink(1);
 
-  stopMotor(LEFT);
-  stopMotor(RIGHT);
+  StopBothMotors();
+
   delay(100);
 }
 
-void TurnRight90()
+void LaserCoordinator()
 {
-  stopMotor(LEFT);
-  stopMotor(RIGHT);
-  delay(100);
+  float leftDistance = ReadLeftDistance();
+  float rightDistance = ReadRightDistance();
 
-  // turning right moves us into the next direction in the cycle
-  LocalDirectionStates newDirection = (LocalDirectionStates)((CurrentDirection + 1) % 4);
+  // Reset encoder distance
+  ResetEncoders();
 
-  TurnToYaw(directionYaw[newDirection]);
+  // Reset Laser PID
+  I_laser = 0;
+  laserPrevError = 0;
+  laserPrevTime = millis();
 
-  CurrentDirection = newDirection;
+  // Both walls detected
+  if (leftDistance <= 8 && rightDistance <= 8)
+  {
+    while (TargetDistance())
+    {
+      MotorSpeed effecterror = CalculateLaserSpeed();
+
+      MotorForward(effecterror.leftSpeed, LEFT);
+      MotorForward(effecterror.rightSpeed, RIGHT);
+    }
+  }
+  // Left wall detected
+  else if (leftDistance <= 8 && rightDistance >= 8)
+  {
+    while (TargetDistance())
+    {
+      MotorSpeed effecterror = CalculateLeftWallSpeed();
+
+      MotorForward(effecterror.leftSpeed, LEFT);
+      MotorForward(effecterror.rightSpeed, RIGHT);
+    }
+  }
+  // Right wall detected
+  else if (leftDistance >= 8 && rightDistance <= 8)
+  {
+    while (TargetDistance())
+    {
+      MotorSpeed effecterror = CalculateRightWallSpeed();
+
+      MotorForward(effecterror.leftSpeed,LEFT);
+      MotorForward(effecterror.rightSpeed,RIGHT);
+    }
+  }
 }
 
-void TurnLeft90()
-{
-  stopMotor(LEFT);
-  stopMotor(RIGHT);
-  delay(100);
-
-  // turning left moves us to the previous direction in the cycle
-  LocalDirectionStates newDirection = (LocalDirectionStates)((CurrentDirection + 3) % 4);
-
-  TurnToYaw(directionYaw[newDirection]);
-
-  CurrentDirection = newDirection;
-}
-
-
-
-
-//Accuracy Imrovement functions 
+// ==================== Accuracy Improvement Functions ====================
+// Correct robot orientation before moving
 void CorrectRotation()
 {
-  stopMotor(LEFT);
-  stopMotor(RIGHT);
+  StopBothMotors();
+
   delay(100);
 
   TurnToYaw(directionYaw[CurrentDirection]);
-
 }
 
+// Correct robot offset from the walls
 void CorrectOffset()
-{ 
-  leftEncoderCount=0;
-  rightEncoderCount=0;
-
+{
+  ResetEncoders(); 
   UpdateLasers();
-  if(leftWallDistance<60)
+
+  // Left wall
+  if (leftWallDistance < 8)
   {
-    if(leftWallDistance<40)
+    if (leftWallDistance < 6)
+    {
+      bool goingForward = true;
+
+      while (leftWallDistance < 6)
       {
-        bool goingForward = true;
+        UpdateLasers();
 
-        while(leftWallDistance<50)
+        long avgTicks = GetAverageEncoderTicks();
+
+        if (avgTicks < 100 && goingForward)
         {
-          UpdateLasers();
-
-          if((leftEncoderCount+rightEncoderCount)/2<100 && goingForward)
-          {
-            motorForward(135, LEFT);
-            motorForward(110, RIGHT);
-          }
-          else if((leftEncoderCount+rightEncoderCount)/2>0)
-          {
-            if(goingForward)
-              CorrectRotation();
-            goingForward = false;
-            motorBackward(140, LEFT);
-            motorBackward(110, RIGHT);
-          }
-          else
-          {
+          MotorForward(140, LEFT);
+          MotorForward(110, RIGHT);
+        }
+        else if (avgTicks > 0)
+        {
+          if (goingForward)
             CorrectRotation();
-            goingForward = true;
-          }
-        }
-        while((leftEncoderCount+rightEncoderCount)/2>0)
-        {
-            motorBackward(105, LEFT);
-            motorBackward(105, RIGHT);
-        }
-         while((leftEncoderCount+rightEncoderCount)/2<0)
-        {
-            motorForward(110, LEFT);
-            motorForward(110, RIGHT);
-        }
-        CorrectRotation();
-        stopMotor(LEFT);
-        stopMotor(RIGHT);
-      }
-  }
-  else if(WallInRight())
-  {
-     if(rigthWallDistance<40)
-      {
-        bool goingForward = true;
 
-        while(rigthWallDistance<60)
-        {
-          UpdateLasers();
+          goingForward = false;
 
-          if((leftEncoderCount+rightEncoderCount)/2<100 && goingForward)
-          {
-            motorForward(110, LEFT);
-            motorForward(160, RIGHT);
-          }
-          else if((leftEncoderCount+rightEncoderCount)/2>0)
-          {
-            if(goingForward)
-              CorrectRotation();
-            goingForward = false;
-            motorBackward(110, LEFT);
-            motorBackward(140, RIGHT);
-          }
-          else
-          {
-            CorrectRotation();
-            goingForward = true;
-          }
+          MotorBackward(135, LEFT);
+          MotorBackward(100, RIGHT);
         }
-        while((leftEncoderCount+rightEncoderCount)/2>0)
+        else
         {
-            motorBackward(105, LEFT);
-            motorBackward(105, RIGHT);
+          CorrectRotation();
+          goingForward = true;
         }
-         while((leftEncoderCount+rightEncoderCount)/2<0)
-        {
-            motorForward(110, LEFT);
-            motorForward(110, RIGHT);
-        }
-        CorrectRotation();
-        stopMotor(LEFT);
-        stopMotor(RIGHT);
       }
 
+      while (GetAverageEncoderTicks() > 0)
+      {
+        MotorBackward(105, LEFT);
+        MotorBackward(105, RIGHT);
+      }
+
+      while (GetAverageEncoderTicks() < 0)
+      {
+        MotorForward(110, LEFT);
+        MotorForward(110, RIGHT);
+      }
+
+      CorrectRotation();
+
+      StopBothMotors();
+    }
   }
-  else;
+  // Right wall
+  else
+  {
+    float rightDistance = ReadRightDistance();
 
+    if (rightDistance < 8)
+    {
+      bool goingForward = true;
+
+      while (rightDistance < 6)
+      {
+        UpdateLasers();
+
+        rightDistance = ReadRightDistance();
+
+        long avgTicks = GetAverageEncoderTicks();
+
+        if (avgTicks < 100 && goingForward)
+        {
+          MotorForward(110, LEFT);
+          MotorForward(160, RIGHT);
+        }
+        else if (avgTicks > 0)
+        {
+          if (goingForward)
+            CorrectRotation();
+
+          goingForward = false;
+
+          MotorBackward(110, LEFT);
+          MotorBackward(140, RIGHT);
+        }
+        else
+        {
+          CorrectRotation();
+          goingForward = true;
+        }
+      }
+
+      while (GetAverageEncoderTicks() > 0)
+      {
+        MotorBackward(105, LEFT);
+        MotorBackward(105, RIGHT);
+      }
+
+      while (GetAverageEncoderTicks() < 0)
+      {
+        MotorForward(110, LEFT);
+        MotorForward(110, RIGHT);
+      }
+
+      CorrectRotation();
+
+      StopBothMotors();
+    }
+  }
+}
+
+// ==================== Functions =================
+// Calculate Delta Time
+float CalculateDT(unsigned long currentTime, unsigned long prevTime)
+{
+  float dt = (currentTime - prevTime) / 1000.0;
+
+  if (dt <= 0)
+  {
+    dt = 0.001;
+  }
+
+  return dt;
+}
+
+long CalculateTargetTicks(float targetDistance_cm)
+{
+  float ticksPerRev = encoderPolesCount * 2 * motorGearRatio;
+  float wheelCircumference_cm = PI * wheelDiameter;
+  long targetTicks = ((targetDistance_cm / wheelCircumference_cm) * ticksPerRev);
+  return targetTicks;
+}
+
+float CalculateError(float desiredValue, float measuredValue)
+{
+  return (desiredValue - measuredValue);
+}
+
+bool TargetDistance()
+{
+  float ticksPerRev = encoderPolesCount * 2 * motorGearRatio;
+  float wheelCircumference_cm = PI * wheelDiameter;
+  long targetTicks = (long)((targetDistance_cm / wheelCircumference_cm) * ticksPerRev);
+  long avgTicks = GetAverageEncoderTicks();
+
+  if (avgTicks >= targetTicks) {
+    StopBothMotors();
+
+    return false;
+  } else {
+    return true;
+  }
+}
+
+// Normalize Angle
+float NormalizeAngle(float angle) {
+  if (angle > 180)
+    angle -= 360;
+
+  if (angle < -180)
+    angle += 360;
+
+  return angle;
+}
+
+void ResetEncoders()
+{
+    portENTER_CRITICAL(&leftEncoderMux);
+    leftEncoderCount = 0;
+    portEXIT_CRITICAL(&leftEncoderMux);
+
+    portENTER_CRITICAL(&rightEncoderMux);
+    rightEncoderCount = 0;
+    portEXIT_CRITICAL(&rightEncoderMux);
+}
+
+long GetAverageEncoderTicks() {
+  return (leftEncoderCount + rightEncoderCount) / 2;
+}
+
+bool IsFrontWallDetected() {
+  return (digitalRead(IR_pin) == LOW);
+}
+
+// ==================== Laser Error Functions ====================
+MotorSpeed CalculateLaserSpeed()
+{
+  float leftDistance = ReadLeftDistance();
+  float rightDistance = ReadRightDistance();
+
+  if (leftDistance <= 0 || rightDistance <= 0)
+  {
+    StopBothMotors();
+    return {0, 0};
+  }
+
+  laserError = CalculateError(rightDistance, leftDistance);
+
+  unsigned long currentTime = millis();
+
+  float dt = CalculateDT(currentTime, laserPrevTime);
+
+  laserPrevTime = currentTime;
+  float output = CalculateLaserPID(laserError, dt);
+
+  int leftSpeed = baseSpeed - output;
+  int rightSpeed = baseSpeed + output;
+
+  leftSpeed = constrain(leftSpeed, 0, 180);
+  rightSpeed = constrain(rightSpeed, 0, 180);
+
+  return {leftSpeed, rightSpeed};
+}
+
+MotorSpeed CalculateLeftWallSpeed()
+{
+  float leftDistance = ReadLeftDistance();
+
+  if (leftDistance <= 0)
+  {
+    StopBothMotors();
+    return {0, 0};
+  }
+
+  laserError = CalculateError(targetWallDistance, leftDistance);
+
+  unsigned long currentTime = millis();
+  float dt = CalculateDT(currentTime, laserPrevTime);
+
+  laserPrevTime = currentTime;
+
+  float output = CalculateLaserPID(laserError, dt);
+
+  int leftSpeed = baseSpeed - output;
+  int rightSpeed = baseSpeed + output;
+
+  leftSpeed = constrain(leftSpeed, 0, 180);
+  rightSpeed = constrain(rightSpeed, 0, 180);
+
+  return {leftSpeed, rightSpeed};
+}
+
+MotorSpeed CalculateRightWallSpeed()
+{
+  float rightDistance = ReadRightDistance();
+  if (rightDistance <= 0)
+  {
+    StopBothMotors();
+    return {0, 0};
+  }
+
+  laserError = CalculateError(targetWallDistance, rightDistance);
+
+  unsigned long currentTime = millis();
+  float dt = CalculateDT(currentTime, laserPrevTime);
+
+  laserPrevTime = currentTime;
+
+  float output = CalculateLaserPID(laserError, dt);
+
+  int leftSpeed = baseSpeed + output;
+  int rightSpeed = baseSpeed - output;
+
+  leftSpeed = constrain(leftSpeed, 0, 180);
+  rightSpeed = constrain(rightSpeed, 0, 180);
+
+  return {leftSpeed, rightSpeed};
+}
+
+// ==================== PID Functions =================
+float CalculateEncoderPID(float error, float dt) {
+
+    // PID
+    P_Encoder = error * Kp_Encoder;
+    I_Encoder += dt * Ki_Encoder * error;
+    I_Encoder = constrain(I_Encoder, -maxPID_Out, maxPID_Out);
+    D_Encoder = ((error - encoderPrevError) / dt) * Kd_Encoder;
+
+    encoderPrevError = error;
+
+    return constrain(P_Encoder + I_Encoder + D_Encoder, -maxPID_Out, maxPID_Out);    
+    
+}
+
+float CalculateTurnPID(float error, float dt)
+{
+
+  P_mpu = Kp_turn * error;
+  I_mpu += error * dt;
+  I_mpu = constrain(I_mpu, -TURN_INTEGRAL_LIMIT, TURN_INTEGRAL_LIMIT);
+  D_mpu = Kd_turn * ((error - turnPrevError) / dt);
+
+  turnPrevError = error;
+
+  // PID Output
+  float output = P_mpu + (Ki_turn * I_mpu) + D_mpu;
+
+  // Limit Output
+  output = constrain(output, -TURN_SPEED_MAX, TURN_SPEED_MAX);
+
+  return output;
+}
+
+float CalculateLaserPID(float error, float dt)
+{
+
+  P_laser = Kp_distance * error;
+  I_laser += error * dt * Ki_distance;
+  I_laser = constrain(I_laser, -distance_INTEGRAL_LIMIT, distance_INTEGRAL_LIMIT);
+  D_laser = Kd_distance * ((error - laserPrevError) / dt);
+
+  laserPrevError = error;
+
+  // PID output
+  float output = P_laser + I_laser + D_laser;
+
+  output = constrain(output, -distance_PID_MAX, distance_PID_MAX);
+
+  return output;
+}
+
+float CalculateMoveDistancePID(float distanceError)
+{
+  unsigned long currentDistanceTime = millis();
+
+  float dtDistance = CalculateDT(currentDistanceTime, moveDistancePrevTime);
+
+  float distanceDerivative = (distanceError - moveDistancePrevError) / dtDistance;
+
+  float distanceOutput =
+    Kp_moveDistance * distanceError +
+    Kd_moveDistance * distanceDerivative;
+
+  moveDistancePrevError = distanceError;
+  moveDistancePrevTime = currentDistanceTime;
+
+  return constrain(
+    distanceOutput,
+    MIN_MOVE_SPEED,
+    baseSpeed
+  );
 }
 
 
 
+// ==================== Maze Flood-Fill (FirstRun) ================
+// Ported from your API-based micromouse logic. Same algorithm/idea,
+// only the hardware calls (API::wallFront/Right/Left, API::MoveForward,
+// API::turnRight/turnLeft) were swapped for this robot's own functions.
 
+void MazeLog(const String &text)
+{
+  SerialBT.println(text);
+}
 
+// Wall-present helpers matching API::wallFront()/wallRight()/wallLeft()
+// semantics: true = wall detected, false = free.
+bool WallFrontPresent()
+{
+  return IsFrontWallDetected();
+}
 
+bool WallLeftPresent()
+{
+  float d = ReadLeftDistance();
+  if (d <= 0) return true; // treat bad reading as a wall (safe default)
+  return d <= WALL_DETECTED;
+}
 
+bool WallRightPresent()
+{
+  float d = ReadRightDistance();
+  if (d <= 0) return true; // treat bad reading as a wall (safe default)
+  return d <= WALL_DETECTED;
+}
 
-
-
-
-
-
-
-
-
-
-
-
-
-//software Functions
-void correct_direction(char dir) {
-    if(up) {
-        if(dir == 'D') {
+void CorrectDirection(char globalDirection)
+{
+    if (up)
+    {
+        if (globalDirection == 'R')
+        {
             TurnRight90();
-            TurnRight90();
-            up = false; down = true;
+            up = 0;
+            rgt = 1;
         }
-        if(dir == 'L') {
+        else if (globalDirection == 'D')
+        {
+            Turn180();
+            up = 0;
+            down = 1;
+        }
+        else if (globalDirection == 'L')
+        {
             TurnLeft90();
-            up = false; lft = true;
-        }
-        if(dir == 'R') {
-
-            TurnRight90();
-            up = false; rght = true;
+            up = 0;
+            lft = 1;
         }
     }
-    else if(down) {
-        if(dir == 'U') {
-            TurnRight90();
-            TurnRight90();
-            down = false; up = true;
-        }
-        if(dir == 'L') {
-            TurnRight90();
-            down = false; lft = true;
-        }
-        if(dir == 'R') {
+    else if (rgt)
+    {
+        if (globalDirection == 'U')
+        {
             TurnLeft90();
-            down = false; rght = true;
+            up = 1;
+            rgt = 0;
+        }
+        else if (globalDirection == 'D')
+        {
+            TurnRight90();
+            rgt = 0;
+            down = 1;
+        }
+        else if (globalDirection == 'L')
+        {
+            Turn180();
+            rgt = 0;
+            lft = 1;
         }
     }
-    else if(lft) {
-        if(dir == 'U') {
+    else if (lft)
+    {
+        if (globalDirection == 'U')
+        {
             TurnRight90();
-            lft = false; up = true;
+            up = 1;
+            lft = 0;
         }
-        if(dir == 'D') {
+        else if (globalDirection == 'D')
+        {
             TurnLeft90();
-            lft = false; down = true;
+            lft = 0;
+            down = 1;
         }
-        if(dir == 'R') {
-            TurnRight90();
-            TurnRight90();
-            lft = false; rght = true;
+        else if (globalDirection == 'R')
+        {
+            Turn180();
+            lft = 0;
+            rgt = 1;
         }
     }
-    else if(rght) {
-        if(dir == 'U') {
+    else if (down)
+    {
+        if (globalDirection == 'L')
+        {
+            TurnRight90();
+            down = 0;
+            lft = 1;
+        }
+        else if (globalDirection == 'R')
+        {
             TurnLeft90();
-            rght = false; up = true;
+            down = 0;
+            rgt = 1;
         }
-        if(dir == 'D') {
-            TurnRight90();
-            rght = false; down = true;
-        }
-        if(dir == 'L') {
-            TurnRight90();
-            TurnRight90();
-            rght = false; lft = true;
+        else if (globalDirection == 'U')
+        {
+            Turn180();
+            down = 0;
+            up = 1;
         }
     }
 }
- 
-void Move_Forward(int x, int y, char global_direction) {
-    dfs.push({x, y});
-    vis[x][y] = true;
-    correct_direction(global_direction);
-    MoveStraight(cellLength);
-    steps.push_back(global_direction);
+
+void MoveForward(int x, int y, char globalDirection)
+{
+    if (globalDirection == 'R')
+    {
+        parent[x][y] = {x, y - 2};
+    }
+    else if (globalDirection == 'L')
+    {
+        parent[x][y] = {x, y + 2};
+    }
+    else if (globalDirection == 'U')
+    {
+        parent[x][y] = {x + 2, y};
+    }
+    else if (globalDirection == 'D')
+    {
+        parent[x][y] = {x - 2, y};
+    }
+
+    mazeSt.push({x, y});
+    vis[x][y] = 1;
+
+    CorrectDirection(globalDirection);
+
+    MoveStraight(Step);
 }
- 
-void Move_To_The_Previous_Cell(int &x, int &y) {
-    while(!steps.empty()) {
-        char last = steps.back();
-        steps.pop_back();
- 
-        char next = last;
-        if(next == 'D') next = 'U';
-        else if(next == 'U') next = 'D';
-        else if(next == 'R') next = 'L';
-        else if(next == 'L') next = 'R';
- 
-        correct_direction(next);
-        MoveStraight(cellLength);
- 
-        if(next == 'L') {
-            y -= 2;
-        }
-        if(next == 'R') {
-            y += 2;
-        }
-        if(next == 'D') {
-            x += 2;
-        }
-        if(next == 'U') {
-            x -= 2;
-        }
- 
-        for(int k = 0; k < 4; k++) {
-            int new_x = x + moves[k].first;
-            int new_y = y + moves[k].second;
- 
-            if(new_x>=0 and new_y>=0 and new_x<n and new_y<n and !vis[new_x][new_y]) {
-                if(direction_name[k] == 'D') {
-                    if(maze[x + 1][y] == 1) {
-                        Move_Forward(x + 2, y, 'D');
+
+void MoveToPrevCell(int &x, int &y)
+{
+    while (parent[x][y].first != -1)
+    {
+        int parent_x = parent[x][y].first;
+        int parent_y = parent[x][y].second;
+
+        char backDirection;
+
+        if (parent_x == x && parent_y == y - 2)
+            backDirection = 'L';
+        else if (parent_x == x && parent_y == y + 2)
+            backDirection = 'R';
+        else if (parent_x == x - 2 && parent_y == y)
+            backDirection = 'U';
+        else if (parent_x == x + 2 && parent_y == y)
+            backDirection = 'D';
+        else
+            return;
+
+        CorrectDirection(backDirection);
+        MoveStraight(Step);
+
+        x = parent_x;
+        y = parent_y;
+
+        for (int k = 0; k < 4; ++k)
+        {
+            int xx = x + dx[k];
+            int yy = y + dy[k];
+
+            if (xx >= 0 && yy >= 0 &&
+                xx < N && yy < N &&
+                !vis[xx][yy])
+            {
+                if (GlobalDirection[k] == 'R')
+                {
+                    if (maze[x][y + 1] == 1)
+                    {
+                        MoveForward(x, y + 2, 'R');
                         return;
                     }
                 }
-                else if(direction_name[k] == 'U') {
-                    if(maze[x - 1][y] == 1) {
-                        Move_Forward(x - 2, y, 'U');
+                else if (GlobalDirection[k] == 'L')
+                {
+                    if (maze[x][y - 1] == 1)
+                    {
+                        MoveForward(x, y - 2, 'L');
                         return;
                     }
                 }
-                else if(direction_name[k] == 'R') {
-                    if(maze[x][y + 1] == 1) {
-                        Move_Forward(x, y + 2, 'R');
+                else if (GlobalDirection[k] == 'U')
+                {
+                    if (maze[x - 1][y] == 1)
+                    {
+                        MoveForward(x - 2, y, 'U');
                         return;
                     }
                 }
-                else if(direction_name[k] == 'L') {
-                    if(maze[x][y - 1] == 1) {
-                        Move_Forward(x, y - 2, 'L');
+                else if (GlobalDirection[k] == 'D')
+                {
+                    if (maze[x + 1][y] == 1)
+                    {
+                        MoveForward(x + 2, y, 'D');
                         return;
                     }
                 }
@@ -1032,117 +1509,203 @@ void Move_To_The_Previous_Cell(int &x, int &y) {
         }
     }
 }
- 
-void first_run() {
-    int beg_x = n - 1, beg_y = 0;
- 
-    dfs.push({beg_x, beg_y});
+
+// first run
+void FirstRun()
+{
+    int beg_x = N - 1, beg_y = 0;
+
+    mazeSt.push({beg_x, beg_y});
     vis[beg_x][beg_y] = true;
- 
-    while(!dfs.empty()) {
-        int x = dfs.top().first;
-        int y = dfs.top().second;
-        dfs.pop();
- 
-        int nwf = !WallFront();  // 0 -> wall     1 -> no wall
-        int nwr = !WallInRight();
-        int nwl = !WallInLeft();
- 
-        if(up) {
-            if(x - 1 >= 0) {
+
+    while (!mazeSt.empty())
+    {
+        // Print the Values Each time it move a cell
+        WriteLeftDistanceBlueTooth(ReadLeftDistance()); 
+        WriteRightDistanceBlueTooth(ReadLeftDistance());
+        WriteEncoderValuesBlueTooth();
+        WriteMPUValuesBlueTooth();
+
+        int x = mazeSt.top().first;
+        int y = mazeSt.top().second;
+
+        mazeSt.pop();
+
+        bool nwf = !WallFrontPresent(); // 0-> wall , 1-> free
+        bool nwr = !WallRightPresent();
+        bool nwl = !WallLeftPresent();
+
+        if (up)
+        {
+            if (x - 1 >= 0)
                 maze[x - 1][y] = nwf;
-            }
-            if(y + 1 < n) {
+            if (y + 1 < N)
                 maze[x][y + 1] = nwr;
-            }
-            if(y - 1 >= 0) {
+            if (y - 1 >= 0)
                 maze[x][y - 1] = nwl;
-            }
- 
-            if(x - 2 >= 0 and nwf and !vis[x - 2][y]) {
-                Move_Forward(x - 2, y, 'U');
-            }
-            else if(y + 2 < n and nwr and !vis[x][y + 2]) {
-                Move_Forward(x, y + 2, 'R');
-            }
-            else if(y - 2 >= 0 and nwl and !vis[x][y - 2]) {
-                Move_Forward(x, y - 2, 'L');
-            }
-            else {
-                Move_To_The_Previous_Cell(x, y);
-            }
+
+            if (x - 2 >= 0 and nwf and !vis[x - 2][y])
+                MoveForward(x - 2, y, 'U');
+            else if (y + 2 < N and nwr and !vis[x][y + 2])
+                MoveForward(x, y + 2, 'R');
+            else if (y - 2 >= 0 and nwl and !vis[x][y - 2])
+                MoveForward(x, y - 2, 'L');
+            else
+                MoveToPrevCell(x, y);
         }
-        else if(down) {
-            if(x + 1 < n) {
+        else if (down)
+        {
+            if (x + 1 < N)
                 maze[x + 1][y] = nwf;
-            }
-            if(y - 1 >= 0) {
-                maze[x][y - 1] = nwr;
-            }
-            if(y + 1 < n) {
+            if (y + 1 < N)
                 maze[x][y + 1] = nwl;
-            }
- 
-            if(x + 2 < n and nwf and !vis[x + 2][y]) {
-                Move_Forward(x + 2, y, 'D');
-            }
-            else if(y - 2 >= 0 and nwr and !vis[x][y - 2]) {
-                Move_Forward(x, y - 2, 'L');
-            }
-            else if(y + 2 < n and nwl and !vis[x][y + 2]) {
-                Move_Forward(x, y + 2, 'R');
-            }
-            else {
-                Move_To_The_Previous_Cell(x, y);
-            }
+            if (y - 1 >= 0)
+                maze[x][y - 1] = nwr;
+
+            if (x + 2 < N and nwf and !vis[x + 2][y])
+                MoveForward(x + 2, y, 'D');
+            else if (y - 2 >= 0 and nwr and !vis[x][y - 2])
+                MoveForward(x, y - 2, 'L');
+            else if (y + 2 < N and nwl and !vis[x][y + 2])
+                MoveForward(x, y + 2, 'R');
+            else
+                MoveToPrevCell(x, y);
         }
-        else if(lft) {
-            if(y - 1 >= 0) {
-                maze[x][y - 1] = nwf;
-            }
-            if(x - 1 >= 0) {
-                maze[x - 1][y] = nwr;
-            }
-            if(x + 1 < n) {
-                maze[x + 1][y] = nwl;
-            }
- 
-            if(y - 2 >= 0 and nwf and !vis[x][y - 2]) {
-                Move_Forward(x, y - 2, 'L');
-            }
-            else if(x - 2 >= 0 and nwr and !vis[x - 2][y]) {
-                Move_Forward(x - 2, y, 'U');
-            }
-            else if(x + 2 < n and nwl and !vis[x + 2][y]) {
-                Move_Forward(x + 2, y, 'D');
-            }
-            else {
-                Move_To_The_Previous_Cell(x, y);
-            }
-        }
-        else if(rght) {
-            if(y + 1 < n) {
+        else if (rgt)
+        {
+            if (y + 1 < N)
                 maze[x][y + 1] = nwf;
-            }
-            if(x + 1 < n) {
+            if (x + 1 < N)
                 maze[x + 1][y] = nwr;
-            }
-            if(x - 1 >= 0) {
+            if (x - 1 >= 0)
                 maze[x - 1][y] = nwl;
-            }
- 
-            if(y + 2 < n and nwf and !vis[x][y + 2]) {
-                Move_Forward(x, y + 2, 'R');
-            }
-            else if(x + 2 < n and nwr and !vis[x + 2][y]) {
-                Move_Forward(x + 2, y, 'D');
-            }
-            else if(x - 2 >= 0 and nwl and !vis[x - 2][y]) {
-                Move_Forward(x - 2, y, 'U');
-            }
-            else {
-                Move_To_The_Previous_Cell(x, y);
+
+            if (y + 2 < N and nwf and !vis[x][y + 2])
+                MoveForward(x, y + 2, 'R');
+            else if (x + 2 < N and nwr and !vis[x + 2][y])
+                MoveForward(x + 2, y, 'D');
+            else if (x - 2 >= 0 and nwl and !vis[x - 2][y])
+                MoveForward(x - 2, y, 'U');
+            else
+                MoveToPrevCell(x, y);
+        }
+        else if (lft)
+        {
+            if (y - 1 >= 0)
+                maze[x][y - 1] = nwf;
+            if (x - 1 >= 0)
+                maze[x - 1][y] = nwr;
+            if (x + 1 < N)
+                maze[x][y + 1] = nwl;
+
+            if (y - 2 >= 0 and nwf and !vis[x][y - 2])
+                MoveForward(x, y - 2, 'L');
+            else if (x - 2 >= 0 and nwr and !vis[x - 2][y])
+                MoveForward(x - 2, y, 'U');
+            else if (x + 2 < N and nwl and !vis[x + 2][y])
+                MoveForward(x, y + 2, 'D');
+            else
+                MoveToPrevCell(x, y);
+        }
+    }
+}
+
+// ==================== Maze Flood-Fill (SecondRun) ================
+void SecondRun()
+{
+    int beg_x = N - 1, beg_y = 0;
+
+    vector<vector<pair<int, int>>> bfsParent(N, vector<pair<int, int>>(N, {-1, -1}));
+    vector<vector<bool>> visited(N, vector<bool>(N, false));
+
+    queue<pair<int, int>> q;
+    q.push({beg_x, beg_y});
+    visited[beg_x][beg_y] = true;
+
+    // Center goal cells, computed generically from N (works for any odd N = 2*cells - 1)
+    int half = (N - 1) / 2;
+    vector<pair<int, int>> goals = {
+        {half - 1, half - 1}, {half - 1, half + 1},
+        {half + 1, half - 1}, {half + 1, half + 1}
+    };
+
+    pair<int, int> goalCell = {-1, -1};
+    bool found = false;
+
+    while (!q.empty() && !found)
+    {
+        
+        int x = q.front().first;
+        int y = q.front().second;
+        q.pop();
+
+        for (int k = 0; k < 4 && !found; ++k)
+        {
+            int xx = x + dx[k];
+            int yy = y + dy[k];
+
+            if (xx < 0 || yy < 0 || xx >= N || yy >= N) continue;
+            if (visited[xx][yy]) continue;
+
+            bool open = false;
+            if (GlobalDirection[k] == 'R')      open = (maze[x][y + 1] == 1);
+            else if (GlobalDirection[k] == 'L') open = (maze[x][y - 1] == 1);
+            else if (GlobalDirection[k] == 'U') open = (maze[x - 1][y] == 1);
+            else if (GlobalDirection[k] == 'D') open = (maze[x + 1][y] == 1);
+
+            if (open)
+            {
+                visited[xx][yy] = true;
+                bfsParent[xx][yy] = {x, y};
+                q.push({xx, yy});
+
+                for (auto &g : goals)
+                {
+                    if (xx == g.first && yy == g.second)
+                    {
+                        found = true;
+                        goalCell = {xx, yy};
+                        break;
+                    }
+                }
             }
         }
+    }
+
+    if (!found)
+    {
+        MazeLog("SecondRun: no path to goal found");
+        return;
+    }
+
+    // Reconstruct path start -> goal
+    vector<pair<int, int>> path;
+    path.push_back(goalCell);
+    pair<int, int> cur = goalCell;
+
+    while (!(cur.first == beg_x && cur.second == beg_y))
+    {
+        cur = bfsParent[cur.first][cur.second];
+        path.push_back(cur);
+    }
+    reverse(path.begin(), path.end());
+
+    MazeLog("SecondRun: shortest path length = " + String((int)path.size() - 1));
+
+    // Drive the robot along the path
+    for (size_t i = 1; i < path.size(); ++i)
+    {
+        int x0 = path[i - 1].first, y0 = path[i - 1].second;
+        int x1 = path[i].first,     y1 = path[i].second;
+
+        char dir;
+        if (x1 == x0 - 2 && y1 == y0)      dir = 'U';
+        else if (x1 == x0 + 2 && y1 == y0) dir = 'D';
+        else if (y1 == y0 + 2 && x1 == x0) dir = 'R';
+        else if (y1 == y0 - 2 && x1 == x0) dir = 'L';
+        else continue; // shouldn't happen with a valid BFS path
+
+        CorrectDirection(dir);
+        MoveStraight(Step);
     }
 }
