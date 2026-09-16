@@ -797,10 +797,10 @@ void MoveStraight(float targetDistance_cm)
         wallDetectedStartTime = millis();
     }
 
-    if (millis() - wallDetectedStartTime >= 3000)
+    if (millis() - wallDetectedStartTime >= 1500)
     {
       StopBothMotors();
-      BackOffFromWall(6);
+      BackOffFromWall(4);
       break;
     }
     }else {
@@ -942,6 +942,7 @@ void LaserCoordinator()
     }
   }
 }
+
 
 // ==================== Accuracy and Movment Improvement Functions ====================
 void BackOffFromWall(float distance_cm)
