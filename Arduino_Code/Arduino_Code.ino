@@ -797,8 +797,12 @@ void MoveStraight(float targetDistance_cm)
 {
   StopBothMotors();
   CorrectRotation();
+  CorrectOffset();
   ResetEncoders();
+  unsigned long wallDetectedStartTime = 0;
+  bool wallTimerActive = false ;
 
+  
   long targetTicks = CalculateTargetTicks(targetDistance_cm);
 
   I_Encoder = 0;
@@ -847,14 +851,20 @@ void MoveStraight(float targetDistance_cm)
 
     if (IsFrontWallDetected())
     {
-      StopBothMotors();
-      delay(100);
-      break;
+      if(!wallTimerActive){
+        wallTimerActive = true;
+        wallDetectedStartTime = millis();
+      }
+
+      if(millis()- wallDetectedStartTime >=1500){
+        StopBothMotors();
+        BackOffFromWall(4);
+        break;
+      }
+      else
+        wallTimerActive = false ;
     }
   }
-
-  StopBothMotors();
-  CorrectOffset();
   StopBothMotors();
 }
 
@@ -990,6 +1000,24 @@ void LaserCoordinator()
   }
 }
 
+void BackOffFromWall(float distance_cm)
+{
+    ResetEncoders();
+
+    long targetTicks = CalculateTargetTicks(distance_cm);
+
+    while (GetAverageEncoderTicks() < targetTicks)
+    {
+        MotorBackward(110, LEFT);
+        MotorBackward(110, RIGHT);
+    }
+
+    StopBothMotors();
+    delay(10);
+
+    CorrectRotation();
+}
+
 // ==================== Accuracy Improvement Functions ====================
 // Correct robot orientation before moving
 void CorrectRotation()
@@ -1008,13 +1036,13 @@ void CorrectOffset()
   UpdateLasers();
 
   // Left wall
-  if (leftWallDistance < 6)
+  if (leftWallDistance < 7)
   {
-    if (leftWallDistance < 4)
+    if (leftWallDistance < 5)
     {
       bool goingForward = true;
 
-      while (leftWallDistance < 5)
+      while (leftWallDistance < 6)
       {
         UpdateLasers();
 
