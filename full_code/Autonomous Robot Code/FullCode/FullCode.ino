@@ -736,7 +736,11 @@ void MoveStraight(float targetDistance_cm)
 {
   StopBothMotors();
   CorrectRotation();
+  CorrectOffset();
   ResetEncoders();
+
+  unsigned long wallDetectedStartTime = 0;
+  bool wallTimerActive = false;
 
   long targetTicks = CalculateTargetTicks(targetDistance_cm);
 
@@ -786,14 +790,24 @@ void MoveStraight(float targetDistance_cm)
 
     if (IsFrontWallDetected())
     {
+
+    if (!wallTimerActive)
+    {
+        wallTimerActive = true;
+        wallDetectedStartTime = millis();
+    }
+
+    if (millis() - wallDetectedStartTime >= 3000)
+    {
       StopBothMotors();
-      delay(100);
+      BackOffFromWall(6);
       break;
+    }
+    }else {
+      wallTimerActive = false;
     }
   }
 
-  StopBothMotors();
-  CorrectOffset();
   StopBothMotors();
 }
 
@@ -929,7 +943,25 @@ void LaserCoordinator()
   }
 }
 
-// ==================== Accuracy Improvement Functions ====================
+// ==================== Accuracy and Movment Improvement Functions ====================
+void BackOffFromWall(float distance_cm)
+{
+    ResetEncoders();
+
+    long targetTicks = CalculateTargetTicks(distance_cm);
+
+    while (GetAverageEncoderTicks() < targetTicks)
+    {
+        MotorBackward(110, LEFT);
+        MotorBackward(110, RIGHT);
+    }
+
+    StopBothMotors();
+    delay(10);
+
+    CorrectRotation();
+}
+
 // Correct robot orientation before moving
 void CorrectRotation()
 {
@@ -947,13 +979,13 @@ void CorrectOffset()
   UpdateLasers();
 
   // Left wall
-  if (leftWallDistance < 6)
+  if (leftWallDistance < 7)
   {
-    if (leftWallDistance < 4)
+    if (leftWallDistance < 5)
     {
       bool goingForward = true;
 
-      while (leftWallDistance < 5)
+      while (leftWallDistance < 6)
       {
         UpdateLasers();
 
@@ -1003,7 +1035,7 @@ void CorrectOffset()
   {
     float rightDistance = ReadRightDistance();
 
-    if (rightDistance < 4)
+    if (rightDistance < 5)
     {
       bool goingForward = true;
 
@@ -1018,7 +1050,7 @@ void CorrectOffset()
         if (avgTicks < 100 && goingForward)
         {
           MotorForward(110, LEFT);
-          MotorForward(160, RIGHT);
+          MotorForward(150, RIGHT);
         }
         else if (avgTicks > 0)
         {
