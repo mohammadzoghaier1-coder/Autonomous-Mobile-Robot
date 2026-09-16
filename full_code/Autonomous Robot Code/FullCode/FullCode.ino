@@ -55,7 +55,7 @@ using namespace std;
 int encoderPolesCount = 14;
 float motorGearRatio = 29;
 float wheelDiameter = 4.6;  //cm
-float baseSpeed = 135;
+float baseSpeed = 130;
 
 const int Step = 23;
 const int WALL_DETECTED = 10;
@@ -739,7 +739,6 @@ void MoveStraight(float targetDistance_cm)
   ResetEncoders();
 
   long targetTicks = CalculateTargetTicks(targetDistance_cm);
-  long halfTargetTicks = targetTicks / 2;
 
   I_Encoder = 0;
   encoderPrevError = 0;
@@ -765,22 +764,8 @@ void MoveStraight(float targetDistance_cm)
       break;
     }
 
-    int currentSpeed;
+    int currentSpeed = CalculateMoveDistancePID(distanceError);
 
-    if (avgTicks <= halfTargetTicks)
-    {
-      currentSpeed = baseSpeed;
-    }
-    else
-    {
-      float progress = (float)(avgTicks - halfTargetTicks) / (float)(targetTicks - halfTargetTicks);
-
-      progress = constrain(progress, 0.0, 1.0);
-
-      currentSpeed = ((baseSpeed / 1.3) * progress);
-    }
-
-    currentSpeed = constrain(currentSpeed, baseSpeed / 1.3, baseSpeed);
     encoderError = CalculateError(leftTicks, rightTicks);
 
     unsigned long currentTime = millis();
@@ -811,7 +796,6 @@ void MoveStraight(float targetDistance_cm)
   CorrectOffset();
   StopBothMotors();
 }
-
 
 // Turn to specific Yaw
 void TurnToYaw(float targetYaw) {
@@ -963,13 +947,13 @@ void CorrectOffset()
   UpdateLasers();
 
   // Left wall
-  if (leftWallDistance < 8)
+  if (leftWallDistance < 6)
   {
-    if (leftWallDistance < 6)
+    if (leftWallDistance < 4)
     {
       bool goingForward = true;
 
-      while (leftWallDistance < 6)
+      while (leftWallDistance < 5)
       {
         UpdateLasers();
 
@@ -977,7 +961,7 @@ void CorrectOffset()
 
         if (avgTicks < 100 && goingForward)
         {
-          MotorForward(150, LEFT);
+          MotorForward(160, LEFT);
           MotorForward(110, RIGHT);
         }
         else if (avgTicks > 0)
@@ -988,7 +972,7 @@ void CorrectOffset()
           goingForward = false;
 
           MotorBackward(150, LEFT);
-          MotorBackward(110, RIGHT);
+          MotorBackward(120, RIGHT);
         }
         else
         {
@@ -1019,11 +1003,11 @@ void CorrectOffset()
   {
     float rightDistance = ReadRightDistance();
 
-    if (rightDistance < 5)
+    if (rightDistance < 4)
     {
       bool goingForward = true;
 
-      while (rightDistance < 7)
+      while (rightDistance < 6)
       {
         UpdateLasers();
 
@@ -1043,8 +1027,8 @@ void CorrectOffset()
 
           goingForward = false;
 
-          MotorBackward(110, LEFT);
-          MotorBackward(140, RIGHT);
+          MotorBackward(120, LEFT);
+          MotorBackward(150, RIGHT);
         }
         else
         {
