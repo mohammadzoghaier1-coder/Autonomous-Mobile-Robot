@@ -1,4 +1,4 @@
-//Full Code
+//My Arduino code 
 // Cell Size (24*24)
 // Robot Chassis Diameter 122mm
 // Wheel Diameter 46mm
@@ -56,7 +56,7 @@ using namespace std;
 int encoderPolesCount = 14;
 float motorGearRatio = 29;
 float wheelDiameter = 4.6;  //cm
-float baseSpeed = 135;
+float baseSpeed = 130;
 
 const int Step = 22;
 const int WALL_DETECTED = 10;
@@ -113,7 +113,7 @@ VectorFloat gravity;
 float euler[3];
 float ypr[3];
 
-struct OutError 
+struct MotorSpeed 
 {
   float leftSpeed;
   float rightSpeed;
@@ -145,7 +145,7 @@ float Kd_Encoder = 0.5;
 
 // Controller signals
 float P_Encoder;
-float I_Encoder;
+float I_Encoder;  
 float D_Encoder;
 
 float maxPID_Out = 30;
@@ -187,9 +187,9 @@ const int SYNC_MAX_CORRECTION = 5;
 const float SYNC_KP = 1.0;
 
 // TURN PID TUNING
-const float TURN_SPEED_MAX = 135.0;
+const float TURN_SPEED_MAX = 125.0;
 const float TURN_TOLERANCE = 2;
-const float TURN_MIN_EFFECTIVE_SPEED = 120;
+const float TURN_MIN_EFFECTIVE_SPEED = 110;
 const float TURN_INTEGRAL_LIMIT = 10.0;
 
 //Error
@@ -223,6 +223,38 @@ vector<char> GlobalDirection = {'R', 'L', 'D', 'U'};
 stack<pair<int, int>> mazeSt;
 
 bool up = true, down = false, rgt = false, lft = false;
+// ==================================NEW FLOODFIL ALGORTHIM VARIABLES===============================
+const int FLOOD_SIZE = 16;
+const int FLOOD_NUM_GOALS = 4;
+const int FLOOD_INF = 999;
+
+struct FloodCell
+{
+  int x;
+  int y;
+};
+
+int floodMouseX = 0;
+int floodMouseY = 0;
+
+int floodGrid[FLOOD_SIZE][FLOOD_SIZE];
+
+bool floodWalls[FLOOD_SIZE][FLOOD_SIZE][4] = {};
+bool floodKnown[FLOOD_SIZE][FLOOD_SIZE][4] = {};
+bool floodVisited[FLOOD_SIZE][FLOOD_SIZE] = {};
+bool floodTraveled[FLOOD_SIZE][FLOOD_SIZE][4] = {};
+
+queue<FloodCell> floodQueue;
+
+int floodGoalXs[FLOOD_NUM_GOALS] = { 7, 7, 8, 8 };
+int floodGoalYs[FLOOD_NUM_GOALS] = { 7, 8, 7, 8 };
+
+enum FloodRunMode { 
+  FLOOD_FIRST_EXPLORATION,
+  FLOOD_SECOND_EXPLORATION,
+  FLOOD_SPEED_RUN 
+  };
+
 
 // ==================== ISR Functions ================
 // Left Encoder
@@ -279,35 +311,6 @@ void IRAM_ATTR rightEncoderISR_C2() {
   portEXIT_CRITICAL_ISR(&rightEncoderMux);
 }
 
-
-// ==================== New 3-Run Algorithm Prototypes ====================
-enum NewRunMode
-{
-  FIRST_EXPLORATION,
-  SECOND_EXPLORATION,
-  SPEED_RUN
-};
-
-void InitializeNewAlgorithm();
-bool NewRunExploration(NewRunMode mode);
-bool NewRunSpeedRun();
-void NewMarkVisited(int x, int y);
-void NewSenseWalls(int x, int y);
-void NewReflood();
-bool NewGetBestDirection(int x, int y, bool preferUnexplored,
-                         bool confirmedOnly, char &bestDirection);
-bool NewIsConfirmedOpen(int x, int y, char direction);
-void NewCalculateFinalFlood();
-bool NewIsGoal(int x, int y);
-bool NewInBounds(int x, int y);
-void NewGetNeighbor(int x, int y, char direction, int &nx, int &ny);
-void NewRecordWall(int x, int y, char direction);
-void NewRecordOpen(int x, int y, char direction);
-void NewMarkTraveled(int x, int y, char direction);
-void NewFaceDirection(char direction);
-void NewMoveForward(int &x, int &y, char direction);
-void NewReturnToStart();
-
 // ==================== Setup Function ================
 void setup() {
   
@@ -327,52 +330,77 @@ void setup() {
   pinMode(Interrupt_Pin, INPUT);
   attachInterrupt(digitalPinToInterrupt(Interrupt_Pin), DMPDataReady, RISING);
 
-  // Set Initial Direction
+  // Set Initial Direction / Position
   CurrentDirection = FORWARD_D;
+  floodMouseX = 0;
+  floodMouseY = 0;
 
-  
-//Run New Flood fill algorithm  
-//PHASE I    
-NewRunExploration(FIRST_EXPLORATION);
+  // ==================== Flood-Fill Algorithm (ported from the .cpp file's main()) ====================
+  MazeLog("Running...");
 
-delay(2000);
-NewReturnToStart();
+  FloodInitialize();
+  FloodShowGrid();
 
-// PHASE II
-NewRunExploration(SECOND_EXPLORATION);
+  // RUN 1
+  MazeLog("================================");
+  MazeLog("RUN 1: FIRST EXPLORATION");
+  MazeLog("================================");
 
-delay(2000);
-NewReturnToStart();
+  if (!FloodRunExploration(FLOOD_FIRST_EXPLORATION))
+  {
+    return;
+  }
 
-// PHASE III 
-NewRunSpeedRun();
+  FloodWaitForManualReset("RUN 2");
+  // RUN 2
+  MazeLog("================================");
+  MazeLog("RUN 2: SMART EXPLORATION");
+  MazeLog("Prefer unexplored roads when flood values are equal.");
+  MazeLog("================================");
+
+  if (!FloodRunExploration(FLOOD_SECOND_EXPLORATION))
+  {
+    return;
+  }
+
+FloodWaitForManualReset("RUN 3");
+  // RUN 3
+  MazeLog("================================");
+  MazeLog("RUN 3: FINAL SPEED RUN");
+  MazeLog("Calculating shortest confirmed path...");
+  MazeLog("================================");
+
+  if (!FloodRunSpeedRun())
+  {
+    return;
+  }
+
+  MazeLog("");
+  MazeLog("FINAL SPEED RUN COMPLETE!");
 }
 
 // ==================== Loop Function ================
 void loop() {
-  // LaserCoordinator();
-
   //  WriteLeftDistance(ReadLeftDistance());
   //  WriteRightDistance(ReadRightDistance());
   
   // WriteLeftEncoder();
   // WriteRightEncoder();
 
-    // WriteLeftDistanceBlueTooth(ReadLeftDistance()); 
-    // WriteRightDistanceBlueTooth(ReadLeftDistance());
+  // WriteLeftDistanceBlueTooth(ReadLeftDistance()); 
+  // WriteRightDistanceBlueTooth(ReadLeftDistance());
 
   // Serial.print("LEFT: ");
   // Serial.print(ReadLeftDistance());
   // Serial.print("     | Right: ");
   // Serial.println(ReadRightDistance());
   // Serial.println("=================================================");
-  // OutputErrorForLeftWall();
+  // CalculateLeftWallSpeed();
   // Serial.print("error LEFT:    ");
   // Serial.println(error);
-  // OutputErrorForRightWall();
+  // CalculateRightWallSpeed();
   // Serial.print("error RIGHT:    ");
   // Serial.println(error);
-  // WallFollower();
 }
 
 // ==================== Initializing Functions ================
@@ -605,7 +633,6 @@ void MotorBackward(int speed, Motor motor) {
 }
 
 void StopMotor(Motor motor) {
-
   if (motor == LEFT) {
 
     digitalWrite(IN1_L, LOW);
@@ -628,15 +655,13 @@ void StopBothMotors()
 // ==================== Read Functions =================
 // Read Left Distance in cm
 float ReadLeftDistance() {
-uint16_t distance = leftLaser.readRange();
-
-return distance / 10.0;
+  uint16_t distance = leftLaser.readRange();
+  return distance / 10.0;
 }
 
 float ReadRightDistance() {
-uint16_t distance = rightLaser.readRange();
-
-return distance / 10.0;
+  uint16_t distance = rightLaser.readRange();
+  return distance / 10.0;
 }
 
 void UpdateLasers()
@@ -707,6 +732,25 @@ void WriteMPUValuesBlueTooth()
   SerialBT.println(turnError);
 }
 
+
+void WriteMazeBlueTooth()
+{
+  SerialBT.println("Maze:");
+
+  for (int i = 0; i < N; i++)
+  {
+    for (int j = 0; j < N; j++)
+    {
+      SerialBT.print(maze[i][j]);
+      SerialBT.print(" ");
+    }
+
+    SerialBT.println();
+  }
+}
+
+
+
 // ==================== Control Functions =================
 void TurnRight90() {
   // Stop before starting the turn
@@ -734,6 +778,21 @@ void TurnLeft90() {
   CurrentDirection = newDirection;
 }
 
+
+void Turn180() {
+  StopBothMotors();
+  delay(100);
+
+  LocalDirectionStates newDirection = (LocalDirectionStates)((CurrentDirection + 2) % 4);
+
+  TurnToYaw(directionYaw[newDirection]);
+  CurrentDirection = newDirection;
+
+  StopBothMotors();
+  delay(100);
+}
+
+
 void MoveStraight(float targetDistance_cm)
 {
   StopBothMotors();
@@ -757,8 +816,7 @@ void MoveStraight(float targetDistance_cm)
 
     long avgTicks = GetAverageEncoderTicks();
 
-    float distanceError =
-      CalculateError(targetTicks, avgTicks);
+    float distanceError = CalculateError(targetTicks, avgTicks);
 
     if (distanceError <= DISTANCE_TOLERANCE)
     {
@@ -767,7 +825,7 @@ void MoveStraight(float targetDistance_cm)
       break;
     }
 
-    float currentSpeed = CalculateMoveDistancePID(distanceError);
+    int currentSpeed = CalculateMoveDistancePID(distanceError);
 
     encoderError = CalculateError(leftTicks, rightTicks);
 
@@ -778,20 +836,25 @@ void MoveStraight(float targetDistance_cm)
 
     float straightCorrection = CalculateEncoderPID(encoderError, dt);
 
-    int leftSpeed = (int)(currentSpeed - straightCorrection);
-    int rightSpeed = (int)(currentSpeed + straightCorrection);
+    int leftSpeed = currentSpeed - straightCorrection;
+    int rightSpeed = currentSpeed + straightCorrection;
 
     leftSpeed = constrain(leftSpeed, 0, 180);
     rightSpeed = constrain(rightSpeed, 0, 180);
 
     MotorForward(leftSpeed, LEFT);
     MotorForward(rightSpeed, RIGHT);
+
+    if (IsFrontWallDetected())
+    {
+      StopBothMotors();
+      delay(100);
+      break;
+    }
   }
 
   StopBothMotors();
-
   CorrectOffset();
-
   StopBothMotors();
 }
 
@@ -897,7 +960,7 @@ void LaserCoordinator()
   {
     while (TargetDistance())
     {
-      OutError effecterror = OutputErrorForlaser();
+      MotorSpeed effecterror = CalculateLaserSpeed();
 
       MotorForward(effecterror.leftSpeed, LEFT);
       MotorForward(effecterror.rightSpeed, RIGHT);
@@ -908,7 +971,7 @@ void LaserCoordinator()
   {
     while (TargetDistance())
     {
-      OutError effecterror = OutputErrorForLeftWall();
+      MotorSpeed effecterror = CalculateLeftWallSpeed();
 
       MotorForward(effecterror.leftSpeed, LEFT);
       MotorForward(effecterror.rightSpeed, RIGHT);
@@ -919,7 +982,7 @@ void LaserCoordinator()
   {
     while (TargetDistance())
     {
-      OutError effecterror = OutputErrorForRightWall();
+      MotorSpeed effecterror = CalculateRightWallSpeed();
 
       MotorForward(effecterror.leftSpeed,LEFT);
       MotorForward(effecterror.rightSpeed,RIGHT);
@@ -941,8 +1004,7 @@ void CorrectRotation()
 // Correct robot offset from the walls
 void CorrectOffset()
 {
-  ResetEncoders();  
-
+  ResetEncoders(); 
   UpdateLasers();
 
   // Left wall
@@ -960,7 +1022,7 @@ void CorrectOffset()
 
         if (avgTicks < 100 && goingForward)
         {
-          MotorForward(140, LEFT);
+          MotorForward(160, LEFT);
           MotorForward(110, RIGHT);
         }
         else if (avgTicks > 0)
@@ -970,8 +1032,8 @@ void CorrectOffset()
 
           goingForward = false;
 
-          MotorBackward(135, LEFT);
-          MotorBackward(100, RIGHT);
+          MotorBackward(150, LEFT);
+          MotorBackward(120, RIGHT);
         }
         else
         {
@@ -998,11 +1060,11 @@ void CorrectOffset()
     }
   }
   // Right wall
-  else
+  else if(WallRightPresent())
   {
     float rightDistance = ReadRightDistance();
 
-    if (rightDistance < 6)
+    if (rightDistance < 4)
     {
       bool goingForward = true;
 
@@ -1026,8 +1088,8 @@ void CorrectOffset()
 
           goingForward = false;
 
-          MotorBackward(110, LEFT);
-          MotorBackward(140, RIGHT);
+          MotorBackward(120, LEFT);
+          MotorBackward(150, RIGHT);
         }
         else
         {
@@ -1109,15 +1171,6 @@ float NormalizeAngle(float angle) {
   return angle;
 }
 
-void DetectedFront() {
-
-  while (IsFrontWallDetected()) {
-    StopBothMotors();
-
-    delay(100);
-  }
-}
-
 void ResetEncoders()
 {
     portENTER_CRITICAL(&leftEncoderMux);
@@ -1138,7 +1191,7 @@ bool IsFrontWallDetected() {
 }
 
 // ==================== Laser Error Functions ====================
-OutError OutputErrorForlaser()
+MotorSpeed CalculateLaserSpeed()
 {
   float leftDistance = ReadLeftDistance();
   float rightDistance = ReadRightDistance();
@@ -1167,7 +1220,7 @@ OutError OutputErrorForlaser()
   return {leftSpeed, rightSpeed};
 }
 
-OutError OutputErrorForLeftWall()
+MotorSpeed CalculateLeftWallSpeed()
 {
   float leftDistance = ReadLeftDistance();
 
@@ -1195,7 +1248,7 @@ OutError OutputErrorForLeftWall()
   return {leftSpeed, rightSpeed};
 }
 
-OutError OutputErrorForRightWall()
+MotorSpeed CalculateRightWallSpeed()
 {
   float rightDistance = ReadRightDistance();
   if (rightDistance <= 0)
@@ -1305,7 +1358,7 @@ float CalculateMoveDistancePID(float distanceError)
 
 void MazeLog(const String &text)
 {
-  Serial.println(text);
+  SerialBT.println(text);
 }
 
 // Wall-present helpers matching API::wallFront()/wallRight()/wallLeft()
@@ -1341,8 +1394,7 @@ void CorrectDirection(char globalDirection)
         }
         else if (globalDirection == 'D')
         {
-            TurnRight90();
-            TurnRight90();
+            Turn180();
             up = 0;
             down = 1;
         }
@@ -1369,8 +1421,7 @@ void CorrectDirection(char globalDirection)
         }
         else if (globalDirection == 'L')
         {
-            TurnRight90();
-            TurnRight90();
+            Turn180();
             rgt = 0;
             lft = 1;
         }
@@ -1391,8 +1442,7 @@ void CorrectDirection(char globalDirection)
         }
         else if (globalDirection == 'R')
         {
-            TurnRight90();
-            TurnRight90();
+            Turn180();
             lft = 0;
             rgt = 1;
         }
@@ -1413,8 +1463,7 @@ void CorrectDirection(char globalDirection)
         }
         else if (globalDirection == 'U')
         {
-            TurnRight90();
-            TurnRight90();
+            Turn180();
             down = 0;
             up = 1;
         }
@@ -1617,6 +1666,7 @@ void FirstRun()
             else
                 MoveToPrevCell(x, y);
         }
+
     }
 }
 
@@ -1720,966 +1770,500 @@ void SecondRun()
     }
 }
 
-
-// ============================================================================
-// NEW 3-RUN FLOOD-FILL ALGORITHM
-// ============================================================================
-// This is the user's new algorithm adapted to the robot's existing maze
-// representation:
+// ==================== NEW Flood-Fill Algorithm (ported from your .cpp file) ================
+// This implements the classic 3-phase flood-fill algorithm exactly as it runs in
+// main() of the reference .cpp file: RUN 1 (first exploration), RUN 2 (smart
+// exploration that prefers unexplored cells), RUN 3 (final speed run along the
+// shortest CONFIRMED path).
 //
-//   Logical cells are:
-//     (14,0), (14,2), ... , (0,14)
-//   A movement of one logical cell changes x/y by 2.
-//   The values between cells in maze[][] store the wall/open-road information.
+//   API::wallFront()            -> WallFrontPresent()
+//   API::wallRight()            -> WallRightPresent()
+//   API::wallLeft()             -> WallLeftPresent()
+//   API::moveForward()          -> MoveStraight(Step)
+//   API::turnRight()            -> TurnRight90()   (already turns AND updates CurrentDirection)
+//   API::turnLeft()             -> TurnLeft90()    (already turns AND updates CurrentDirection)
+//   two turnRight() calls (180) -> Turn180()       (already turns AND updates CurrentDirection)
+//   API::setText()/simulator UI -> FloodShowGrid() which reuses MazeLog()/SerialBT
+//   API::wasReset()/ackReset()  -> FloodWaitForManualReset() — there is no physical
+//                                   reset sensor on this robot, so the operator
+//                                   confirms the manual reset with a Bluetooth 'R'
 //
-// The old FirstRun() and SecondRun() functions are NOT used by setup anymore.
-// This section uses the new algorithm's:
-//   1. FIRST_EXPLORATION
-//   2. SECOND_EXPLORATION
-//   3. SPEED_RUN
+// The cpp file's "Direction" (NORTH/EAST/SOUTH/WEST) is not re-declared: it maps
+// 1:1 onto the LocalDirectionStates enum you already have (FORWARD_D=NORTH,
+// RIGHT_D=EAST, BACKWARD_D=SOUTH, LEFT_D=WEST), which is exactly what
+// CurrentDirection / directionYaw[] already track, so CurrentDirection is reused
+// as the mouse's global heading instead of adding a duplicate variable.
 //
-// The physical robot is returned to the start between runs instead of using
-// the simulator reset button.
-
-// -------------------- New Algorithm State --------------------
-
-const int NEW_CELL_COUNT = 8;
-const int NEW_CELL_MIN = 0;
-const int NEW_CELL_MAX = 14;
-const int NEW_INF = 999;
-
-int newFlood[NEW_CELL_COUNT][NEW_CELL_COUNT];
-bool newKnown[NEW_CELL_COUNT][NEW_CELL_COUNT][4] = {};
-bool newWalls[NEW_CELL_COUNT][NEW_CELL_COUNT][4] = {};
-bool newVisited[NEW_CELL_COUNT][NEW_CELL_COUNT] = {};
-bool newTraveled[NEW_CELL_COUNT][NEW_CELL_COUNT][4] = {};
-
-int newMouseX = 7;
-int newMouseY = 0;
-
-// Direction order:
-// 0 = U, 1 = R, 2 = D, 3 = L
-const char NEW_DIRECTIONS[4] = {'U', 'R', 'D', 'L'};
-
-const int NEW_GOAL_COUNT = 4;
-
-// Logical 8x8 center cells.
-// In the physical maze representation these are:
-// (6,6), (6,8), (8,6), (8,8).
-const int NEW_GOAL_X[NEW_GOAL_COUNT] = {3, 3, 4, 4};
-const int NEW_GOAL_Y[NEW_GOAL_COUNT] = {3, 4, 3, 4};
+// Only genuinely missing pieces were implemented: the single-resolution 16x16
+// flood grid, the per-cell wall/known/visited/traveled bookkeeping, the BFS
+// reflood, and the direction-selection / run-orchestration logic.
 
 
-// Convert logical cell index 0..7 to the existing maze coordinate 0..14.
-int NewGridToMaze(int cell)
+// ---- Helpers ----
+
+bool FloodInBounds(int x, int y)
 {
-  return cell * 2;
+  return x >= 0 && x < FLOOD_SIZE && y >= 0 && y < FLOOD_SIZE;
 }
 
-// Convert existing maze coordinate 0,2,...,14 to logical 0..7.
-int NewMazeToGrid(int coordinate)
+LocalDirectionStates FloodOpposite(LocalDirectionStates d)
 {
-  return coordinate / 2;
+  return (LocalDirectionStates)((d + 2) % 4);
 }
 
-
-// -------------------- New Algorithm Basic Helpers --------------------
-
-bool NewInBounds(int x, int y)
+void FloodGetNeighbor(int x, int y, LocalDirectionStates d, int &nx, int &ny)
 {
-  return x >= 0 && x < NEW_CELL_COUNT &&
-         y >= 0 && y < NEW_CELL_COUNT;
+  nx = x;
+  ny = y;
+
+  if (d == FORWARD_D)       ny++;  // NORTH
+  else if (d == RIGHT_D)    nx++;  // EAST
+  else if (d == BACKWARD_D) ny--;  // SOUTH
+  else if (d == LEFT_D)     nx--;  // WEST
 }
 
-
-bool NewIsGoal(int x, int y)
+bool FloodIsGoal(int x, int y)
 {
-  for (int i = 0; i < NEW_GOAL_COUNT; i++)
+  for (int i = 0; i < FLOOD_NUM_GOALS; i++)
   {
-    if (x == NEW_GOAL_X[i] && y == NEW_GOAL_Y[i])
+    if (floodGoalXs[i] == x && floodGoalYs[i] == y)
       return true;
+  }
+  return false;
+}
+
+void FloodInitialize()
+{
+  for (int x = 0; x < FLOOD_SIZE; x++)
+  {
+    for (int y = 0; y < FLOOD_SIZE; y++)
+    {
+      int best = FLOOD_INF;
+
+      for (int i = 0; i < FLOOD_NUM_GOALS; i++)
+      {
+        int fdx = x - floodGoalXs[i];
+        int fdy = y - floodGoalYs[i];
+
+        if (fdx < 0) fdx = -fdx;
+        if (fdy < 0) fdy = -fdy;
+
+        int dist = fdx + fdy;
+
+        if (dist < best) best = dist;
+      }
+
+      floodGrid[x][y] = best;
+    }
+  }
+}
+
+// Prints the flood grid over Bluetooth. Reuses MazeLog()/SerialBT since this
+// robot has no on-maze display like the simulator's API::setText().
+void FloodShowGrid()
+{
+  MazeLog("Flood Grid:");
+
+  for (int y = FLOOD_SIZE - 1; y >= 0; y--)
+  {
+    String row = "";
+
+    for (int x = 0; x < FLOOD_SIZE; x++)
+    {
+      if (floodGrid[x][y] >= FLOOD_INF)
+        row += "X ";
+      else
+      {
+        row += String(floodGrid[x][y]);
+        row += " ";
+      }
+    }
+
+    MazeLog(row);
+  }
+}
+
+void FloodRecordWall(int x, int y, LocalDirectionStates d)
+{
+  floodWalls[x][y][d] = true;
+  floodKnown[x][y][d] = true;
+
+  int nx, ny;
+  FloodGetNeighbor(x, y, d, nx, ny);
+
+  if (FloodInBounds(nx, ny))
+  {
+    LocalDirectionStates otherSide = FloodOpposite(d);
+    floodWalls[nx][ny][otherSide] = true;
+    floodKnown[nx][ny][otherSide] = true;
+  }
+}
+
+void FloodRecordOpen(int x, int y, LocalDirectionStates d)
+{
+  floodWalls[x][y][d] = false;
+  floodKnown[x][y][d] = true;
+
+  int nx, ny;
+  FloodGetNeighbor(x, y, d, nx, ny);
+
+  if (FloodInBounds(nx, ny))
+  {
+    LocalDirectionStates otherSide = FloodOpposite(d);
+    floodWalls[nx][ny][otherSide] = false;
+    floodKnown[nx][ny][otherSide] = true;
+  }
+}
+
+void FloodMarkTraveled(int x, int y, LocalDirectionStates d)
+{
+  floodTraveled[x][y][d] = true;
+
+  int nx, ny;
+  FloodGetNeighbor(x, y, d, nx, ny);
+
+  if (FloodInBounds(nx, ny))
+  {
+    floodTraveled[nx][ny][FloodOpposite(d)] = true;
+  }
+}
+
+// Turns the robot to face "target". Fully reuses TurnRight90()/TurnLeft90()/
+// Turn180(), which already perform the physical turn AND update CurrentDirection
+// — nothing new needed here besides picking which one to call.
+void FloodFaceDirection(LocalDirectionStates target)
+{
+  int difference = ((int)target - (int)CurrentDirection + 4) % 4;
+
+  if (difference == 1)
+    TurnRight90();
+  else if (difference == 2)
+    Turn180();
+  else if (difference == 3)
+    TurnLeft90();
+  // difference == 0 -> already facing target, nothing to do
+}
+
+// Moves exactly one maze cell forward. Reuses MoveStraight() (your existing
+// PID-controlled forward move) for the actual motion.
+void FloodMoveForward()
+{
+  int oldX = floodMouseX;
+  int oldY = floodMouseY;
+  LocalDirectionStates moveDirection = CurrentDirection;
+
+  MoveStraight(Step);
+
+  FloodRecordOpen(oldX, oldY, moveDirection);
+  FloodMarkTraveled(oldX, oldY, moveDirection);
+
+  FloodGetNeighbor(oldX, oldY, moveDirection, floodMouseX, floodMouseY);
+}
+
+// Senses the 3 walls around the mouse. Fully reuses the already-implemented
+// WallFrontPresent()/WallRightPresent()/WallLeftPresent() (robot-relative) and
+// just converts them into absolute (compass) directions for storage.
+void FloodSenseWalls()
+{
+  LocalDirectionStates frontDirection = CurrentDirection;
+  LocalDirectionStates rightDirection = (LocalDirectionStates)((CurrentDirection + 1) % 4);
+  LocalDirectionStates leftDirection  = (LocalDirectionStates)((CurrentDirection + 3) % 4);
+
+  if (WallFrontPresent()) FloodRecordWall(floodMouseX, floodMouseY, frontDirection);
+  else                    FloodRecordOpen(floodMouseX, floodMouseY, frontDirection);
+
+  if (WallRightPresent()) FloodRecordWall(floodMouseX, floodMouseY, rightDirection);
+  else                    FloodRecordOpen(floodMouseX, floodMouseY, rightDirection);
+
+  if (WallLeftPresent())  FloodRecordWall(floodMouseX, floodMouseY, leftDirection);
+  else                    FloodRecordOpen(floodMouseX, floodMouseY, leftDirection);
+}
+
+void FloodMarkVisited()
+{
+  floodVisited[floodMouseX][floodMouseY] = true;
+}
+
+int FloodGetMinNeighbor(int x, int y)
+{
+  int minValue = FLOOD_INF;
+
+  for (int i = 0; i < 4; i++)
+  {
+    LocalDirectionStates d = (LocalDirectionStates)i;
+
+    int nx, ny;
+    FloodGetNeighbor(x, y, d, nx, ny);
+
+    if (!FloodInBounds(nx, ny)) continue;
+    if (floodWalls[x][y][d]) continue;
+
+    if (floodGrid[nx][ny] < minValue)
+      minValue = floodGrid[nx][ny];
+  }
+
+  return minValue;
+}
+
+bool FloodUpdateCell(int x, int y)
+{
+  if (FloodIsGoal(x, y)) return false;
+
+  int minNeighbor = FloodGetMinNeighbor(x, y);
+
+  if (minNeighbor >= FLOOD_INF) return false;
+
+  int newValue = minNeighbor + 1;
+
+  if (floodGrid[x][y] != newValue)
+  {
+    floodGrid[x][y] = newValue;
+    return true;
   }
 
   return false;
 }
 
-
-void NewGetNeighbor(
-  int x,
-  int y,
-  char direction,
-  int &nx,
-  int &ny)
+void FloodReflood()
 {
-  nx = x;
-  ny = y;
+  while (!floodQueue.empty()) floodQueue.pop();
 
-  if (direction == 'U')
-    nx++;
+  floodQueue.push({ floodMouseX, floodMouseY });
 
-  else if (direction == 'R')
-    ny++;
-
-  else if (direction == 'D')
-    nx--;
-
-  else if (direction == 'L')
-    ny--;
-}
-
-
-int NewDirectionIndex(char direction)
-{
-  if (direction == 'U') return 0;
-  if (direction == 'R') return 1;
-  if (direction == 'D') return 2;
-  return 3;
-}
-
-
-char NewOppositeDirection(char direction)
-{
-  if (direction == 'U') return 'D';
-  if (direction == 'R') return 'L';
-  if (direction == 'D') return 'U';
-  return 'R';
-}
-
-
-// -------------------- Wall Memory --------------------
-// The new algorithm keeps its own wall/known/traveled memory.
-// This prevents it from depending on the old FirstRun()/SecondRun()
-// implementation.
-
-void NewRecordWall(int x, int y, char direction)
-{
-  if (!NewInBounds(x, y))
-    return;
-
-  int d = NewDirectionIndex(direction);
-
-  newWalls[x][y][d] = true;
-  newKnown[x][y][d] = true;
-
-  int nx, ny;
-  NewGetNeighbor(x, y, direction, nx, ny);
-
-  if (NewInBounds(nx, ny))
+  for (int i = 0; i < 4; i++)
   {
-    int opposite = NewDirectionIndex(
-      NewOppositeDirection(direction));
-
-    newWalls[nx][ny][opposite] = true;
-    newKnown[nx][ny][opposite] = true;
-  }
-}
-
-
-void NewRecordOpen(int x, int y, char direction)
-{
-  if (!NewInBounds(x, y))
-    return;
-
-  int d = NewDirectionIndex(direction);
-
-  newWalls[x][y][d] = false;
-  newKnown[x][y][d] = true;
-
-  int nx, ny;
-  NewGetNeighbor(x, y, direction, nx, ny);
-
-  if (NewInBounds(nx, ny))
-  {
-    int opposite = NewDirectionIndex(
-      NewOppositeDirection(direction));
-
-    newWalls[nx][ny][opposite] = false;
-    newKnown[nx][ny][opposite] = true;
-  }
-}
-
-
-void NewMarkTraveled(int x, int y, char direction)
-{
-  if (!NewInBounds(x, y))
-    return;
-
-  int d = NewDirectionIndex(direction);
-  newTraveled[x][y][d] = true;
-
-  int nx, ny;
-  NewGetNeighbor(x, y, direction, nx, ny);
-
-  if (NewInBounds(nx, ny))
-  {
-    int opposite = NewDirectionIndex(
-      NewOppositeDirection(direction));
-
-    newTraveled[nx][ny][opposite] = true;
-  }
-}
-
-
-// -------------------- Flood Initialization --------------------
-
-void InitializeNewAlgorithm()
-{
-  // Start at the bottom-left logical cell.
-  newMouseX = 7;
-  newMouseY = 0;
-
-  // The physical robot starts facing forward/up in the global maze.
-  CurrentDirection = FORWARD_D;
-
-  // Clear all new-algorithm memory.
-  for (int x = 0; x < NEW_CELL_COUNT; x++)
-  {
-    for (int y = 0; y < NEW_CELL_COUNT; y++)
-    {
-      newVisited[x][y] = false;
-
-      for (int d = 0; d < 4; d++)
-      {
-        newKnown[x][y][d] = false;
-        newWalls[x][y][d] = false;
-        newTraveled[x][y][d] = false;
-      }
-    }
-  }
-
-  // Initialize flood values from the four center goals.
-  for (int x = 0; x < NEW_CELL_COUNT; x++)
-  {
-    for (int y = 0; y < NEW_CELL_COUNT; y++)
-    {
-      int best = NEW_INF;
-
-      for (int g = 0; g < NEW_GOAL_COUNT; g++)
-      {
-        int dx = x - NEW_GOAL_X[g];
-        int dy = y - NEW_GOAL_Y[g];
-
-        if (dx < 0) dx = -dx;
-        if (dy < 0) dy = -dy;
-
-        int distance = dx + dy;
-
-        if (distance < best)
-          best = distance;
-      }
-
-      newFlood[x][y] = best;
-    }
-  }
-
-  // Mark the four goals in the simulator-style way.
-  for (int i = 0; i < NEW_GOAL_COUNT; i++)
-  {
-    int gx = NewGridToMaze(NEW_GOAL_X[i]);
-    int gy = NewGridToMaze(NEW_GOAL_Y[i]);
-
-    MazeLog("Goal: (" + String(gx) + "," + String(gy) + ")");
-  }
-
-  MazeLog("New 3-run algorithm initialized.");
-}
-
-
-// -------------------- Sensing --------------------
-
-void NewMarkVisited(int x, int y)
-{
-  if (!NewInBounds(x, y))
-    return;
-
-  newVisited[x][y] = true;
-
- 
-}
-
-
-void NewSenseWalls(int x, int y)
-{
-  // The robot's current direction is represented by CurrentDirection.
-  //
-  // CurrentDirection:
-  //   FORWARD_D = U
-  //   RIGHT_D   = R
-  //   BACKWARD_D= D
-  //   LEFT_D    = L
-
-  char front = 'U';
-
-  if (CurrentDirection == FORWARD_D)
-    front = 'U';
-  else if (CurrentDirection == RIGHT_D)
-    front = 'R';
-  else if (CurrentDirection == BACKWARD_D)
-    front = 'D';
-  else if (CurrentDirection == LEFT_D)
-    front = 'L';
-
-  char right;
-  char left;
-
-  if (front == 'U')
-  {
-    right = 'R';
-    left = 'L';
-  }
-  else if (front == 'R')
-  {
-    right = 'D';
-    left = 'U';
-  }
-  else if (front == 'D')
-  {
-    right = 'L';
-    left = 'R';
-  }
-  else
-  {
-    right = 'U';
-    left = 'D';
-  }
-
-  // Front sensor.
-  if (WallFrontPresent())
-    NewRecordWall(x, y, front);
-  else
-    NewRecordOpen(x, y, front);
-
-  // Left laser.
-  if (WallLeftPresent())
-    NewRecordWall(x, y, left);
-  else
-    NewRecordOpen(x, y, left);
-
-  // Right laser.
-  if (WallRightPresent())
-    NewRecordWall(x, y, right);
-  else
-    NewRecordOpen(x, y, right);
-}
-
-
-// -------------------- Reflood --------------------
-// This is the same flood-fill idea as the new algorithm:
-// update a cell to min(open neighbor flood) + 1 until stable.
-
-void NewReflood()
-{
-  bool changed = true;
-
-  while (changed)
-  {
-    changed = false;
-
-    for (int x = 0; x < NEW_CELL_COUNT; x++)
-    {
-      for (int y = 0; y < NEW_CELL_COUNT; y++)
-      {
-        if (NewIsGoal(x, y))
-          continue;
-
-        int minimum = NEW_INF;
-
-        for (int d = 0; d < 4; d++)
-        {
-          char direction = NEW_DIRECTIONS[d];
-
-          int nx, ny;
-          NewGetNeighbor(
-            x, y, direction, nx, ny);
-
-          if (!NewInBounds(nx, ny))
-            continue;
-
-          if (newWalls[x][y][d])
-            continue;
-
-          if (newFlood[nx][ny] < minimum)
-            minimum = newFlood[nx][ny];
-        }
-
-        if (minimum < NEW_INF &&
-            newFlood[x][y] != minimum + 1)
-        {
-          newFlood[x][y] = minimum + 1;
-          changed = true;
-        }
-      }
-    }
-  }
-}
-
-
-// -------------------- Direction Selection --------------------
-
-bool NewGetBestDirection(
-  int x,
-  int y,
-  bool preferUnexplored,
-  bool confirmedOnly,
-  char &bestDirection)
-{
-  int bestValue = NEW_INF;
-  char candidates[4];
-  int candidateCount = 0;
-
-  // Find the smallest flood value among allowed neighbors.
-  for (int d = 0; d < 4; d++)
-  {
-    char direction = NEW_DIRECTIONS[d];
-
     int nx, ny;
-    NewGetNeighbor(
-      x, y, direction, nx, ny);
+    FloodGetNeighbor(floodMouseX, floodMouseY, (LocalDirectionStates)i, nx, ny);
 
-    if (!NewInBounds(nx, ny))
-      continue;
-
-    if (newWalls[x][y][d])
-      continue;
-
-    if (confirmedOnly &&
-        !newKnown[x][y][d])
-    {
-      continue;
-    }
-
-    if (newFlood[nx][ny] < bestValue)
-      bestValue = newFlood[nx][ny];
+    if (FloodInBounds(nx, ny))
+      floodQueue.push({ nx, ny });
   }
 
-  if (bestValue >= NEW_INF)
-    return false;
-
-  // Keep every direction having the same best flood value.
-  for (int d = 0; d < 4; d++)
+  while (!floodQueue.empty())
   {
-    char direction = NEW_DIRECTIONS[d];
+    FloodCell current = floodQueue.front();
+    floodQueue.pop();
 
-    int nx, ny;
-    NewGetNeighbor(
-      x, y, direction, nx, ny);
+    if (!FloodUpdateCell(current.x, current.y)) continue;
 
-    if (!NewInBounds(nx, ny))
-      continue;
-
-    if (newWalls[x][y][d])
-      continue;
-
-    if (confirmedOnly &&
-        !newKnown[x][y][d])
+    for (int i = 0; i < 4; i++)
     {
-      continue;
-    }
-
-    if (newFlood[nx][ny] == bestValue)
-      candidates[candidateCount++] = direction;
-  }
-
-  // Run 2 preference:
-  // first prefer roads that have not been traveled,
-  // then prefer cells that have not been visited.
-  if (preferUnexplored)
-  {
-    for (int i = 0; i < candidateCount; i++)
-    {
-      char direction = candidates[i];
-
-      int d = NewDirectionIndex(direction);
-
-      if (!newTraveled[x][y][d])
-      {
-        bestDirection = direction;
-        return true;
-      }
-    }
-
-    for (int i = 0; i < candidateCount; i++)
-    {
-      char direction = candidates[i];
+      LocalDirectionStates d = (LocalDirectionStates)i;
 
       int nx, ny;
-      NewGetNeighbor(
-        x, y, direction, nx, ny);
+      FloodGetNeighbor(current.x, current.y, d, nx, ny);
 
-      if (!newVisited[nx][ny])
+      if (!FloodInBounds(nx, ny)) continue;
+      if (floodWalls[current.x][current.y][d]) continue;
+
+      floodQueue.push({ nx, ny });
+    }
+  }
+}
+
+bool FloodGetBestDirection(int x, int y, bool preferUnexplored, bool confirmedOnly, LocalDirectionStates &bestDirection)
+{
+  int bestValue = FLOOD_INF;
+  LocalDirectionStates candidates[4];
+  int candidateCount = 0;
+
+  for (int i = 0; i < 4; i++)
+  {
+    LocalDirectionStates d = (LocalDirectionStates)i;
+
+    int nx, ny;
+    FloodGetNeighbor(x, y, d, nx, ny);
+
+    if (!FloodInBounds(nx, ny)) continue;
+    if (floodWalls[x][y][d]) continue;
+    if (confirmedOnly && !floodKnown[x][y][d]) continue;
+
+    if (floodGrid[nx][ny] < bestValue)
+      bestValue = floodGrid[nx][ny];
+  }
+
+  if (bestValue >= FLOOD_INF) return false;
+
+  for (int i = 0; i < 4; i++)
+  {
+    LocalDirectionStates d = (LocalDirectionStates)i;
+
+    int nx, ny;
+    FloodGetNeighbor(x, y, d, nx, ny);
+
+    if (!FloodInBounds(nx, ny)) continue;
+    if (floodWalls[x][y][d]) continue;
+    if (confirmedOnly && !floodKnown[x][y][d]) continue;
+
+    if (floodGrid[nx][ny] == bestValue)
+      candidates[candidateCount++] = d;
+  }
+
+  if (preferUnexplored)
+  {
+    // PRIORITY #1: an untraveled edge
+    for (int i = 0; i < candidateCount; i++)
+    {
+      if (!floodTraveled[x][y][candidates[i]])
       {
-        bestDirection = direction;
+        bestDirection = candidates[i];
+        return true;
+      }
+    }
+
+    // PRIORITY #2: a neighbor cell never visited before
+    for (int i = 0; i < candidateCount; i++)
+    {
+      int nx, ny;
+      FloodGetNeighbor(x, y, candidates[i], nx, ny);
+
+      if (!floodVisited[nx][ny])
+      {
+        bestDirection = candidates[i];
         return true;
       }
     }
   }
 
-  // Normal flood-fill tie breaking.
   bestDirection = candidates[0];
   return true;
 }
 
-
-// -------------------- Physical Movement --------------------
-
-void NewFaceDirection(char target)
+bool FloodRunExploration(FloodRunMode mode)
 {
-  char current = 'U';
+  bool preferUnexplored = (mode == FLOOD_SECOND_EXPLORATION);
 
-  if (CurrentDirection == FORWARD_D)
-    current = 'U';
-  else if (CurrentDirection == RIGHT_D)
-    current = 'R';
-  else if (CurrentDirection == BACKWARD_D)
-    current = 'D';
-  else if (CurrentDirection == LEFT_D)
-    current = 'L';
-
-  if (current == target)
-    return;
-
-  if (current == 'U')
+  while (!FloodIsGoal(floodMouseX, floodMouseY))
   {
-    if (target == 'R')
-      TurnRight90();
-    else if (target == 'D')
+    FloodMarkVisited();
+    FloodSenseWalls();
+    FloodReflood();
+    FloodShowGrid();
+
+    LocalDirectionStates best;
+
+    if (!FloodGetBestDirection(floodMouseX, floodMouseY, preferUnexplored, false, best))
     {
-      TurnRight90();
-      TurnRight90();
-    }
-    else if (target == 'L')
-      TurnLeft90();
-  }
-  else if (current == 'R')
-  {
-    if (target == 'D')
-      TurnRight90();
-    else if (target == 'L')
-    {
-      TurnRight90();
-      TurnRight90();
-    }
-    else if (target == 'U')
-      TurnLeft90();
-  }
-  else if (current == 'D')
-  {
-    if (target == 'L')
-      TurnRight90();
-    else if (target == 'U')
-    {
-      TurnRight90();
-      TurnRight90();
-    }
-    else if (target == 'R')
-      TurnLeft90();
-  }
-  else if (current == 'L')
-  {
-    if (target == 'U')
-      TurnRight90();
-    else if (target == 'R')
-    {
-      TurnRight90();
-      TurnRight90();
-    }
-    else if (target == 'D')
-      TurnLeft90();
-  }
-}
-
-
-void NewMoveForward(
-  int &x,
-  int &y,
-  char direction)
-{
-  int oldX = x;
-  int oldY = y;
-
-  NewFaceDirection(direction);
-
-  // Use the robot's existing distance controller.
-  MoveStraight(Step);
-
-  NewMarkTraveled(
-    oldX,
-    oldY,
-    direction);
-
-  NewGetNeighbor(
-    oldX,
-    oldY,
-    direction,
-    x,
-    y);
-}
-
-
-// -------------------- Exploration --------------------
-
-bool NewRunExploration(NewRunMode mode)
-{
-  bool preferUnexplored =
-    (mode == SECOND_EXPLORATION);
-
-  while (!NewIsGoal(
-    newMouseX,
-    newMouseY))
-  {
-    NewMarkVisited(
-      newMouseX,
-      newMouseY);
-
-    NewSenseWalls(
-      newMouseX,
-      newMouseY);
-
-    NewReflood();
-
-    char bestDirection;
-
-    if (!NewGetBestDirection(
-      newMouseX,
-      newMouseY,
-      preferUnexplored,
-      false,
-      bestDirection))
-    {
-      MazeLog("ERROR: no available direction during exploration.");
-      StopBothMotors();
+      MazeLog("ERROR: no available direction during exploration");
       return false;
     }
 
-    NewMoveForward(
-      newMouseX,
-      newMouseY,
-      bestDirection);
+    FloodFaceDirection(best);
+    FloodMoveForward();
   }
 
-  NewMarkVisited(
-    newMouseX,
-    newMouseY);
-
-  NewSenseWalls(
-    newMouseX,
-    newMouseY);
-
-  NewReflood();
+  FloodMarkVisited();
+  FloodSenseWalls();
+  FloodReflood();
+  FloodShowGrid();
 
   return true;
 }
 
-
-// -------------------- Confirmed-Path Flood --------------------
-
-bool NewIsConfirmedOpen(
-  int x,
-  int y,
-  char direction)
+bool FloodIsConfirmedOpen(int x, int y, LocalDirectionStates d)
 {
   int nx, ny;
+  FloodGetNeighbor(x, y, d, nx, ny);
 
-  NewGetNeighbor(
-    x, y, direction, nx, ny);
+  if (!FloodInBounds(nx, ny)) return false;
 
-  if (!NewInBounds(nx, ny))
-    return false;
-
-  int d = NewDirectionIndex(direction);
-
-  return newKnown[x][y][d] &&
-         !newWalls[x][y][d];
+  return floodKnown[x][y][d] && !floodWalls[x][y][d];
 }
 
-
-void NewCalculateFinalFlood()
+void FloodCalculateFinalFlood()
 {
-  // Start from infinity.
-  for (int x = 0; x < NEW_CELL_COUNT; x++)
+  queue<FloodCell> bfs;
+
+  for (int x = 0; x < FLOOD_SIZE; x++)
+    for (int y = 0; y < FLOOD_SIZE; y++)
+      floodGrid[x][y] = FLOOD_INF;
+
+  for (int i = 0; i < FLOOD_NUM_GOALS; i++)
   {
-    for (int y = 0; y < NEW_CELL_COUNT; y++)
-      newFlood[x][y] = NEW_INF;
+    int gx = floodGoalXs[i];
+    int gy = floodGoalYs[i];
+
+    floodGrid[gx][gy] = 0;
+    bfs.push({ gx, gy });
   }
 
-  // Multi-source BFS from the four center goals.
-  int queueX[NEW_CELL_COUNT * NEW_CELL_COUNT];
-  int queueY[NEW_CELL_COUNT * NEW_CELL_COUNT];
-
-  int head = 0;
-  int tail = 0;
-
-  for (int i = 0; i < NEW_GOAL_COUNT; i++)
+  while (!bfs.empty())
   {
-    int gx = NEW_GOAL_X[i];
-    int gy = NEW_GOAL_Y[i];
+    FloodCell current = bfs.front();
+    bfs.pop();
 
-    newFlood[gx][gy] = 0;
-
-    queueX[tail] = gx;
-    queueY[tail] = gy;
-    tail++;
-  }
-
-  while (head < tail)
-  {
-    int x = queueX[head];
-    int y = queueY[head];
-    head++;
-
-    for (int d = 0; d < 4; d++)
+    for (int i = 0; i < 4; i++)
     {
-      char direction = NEW_DIRECTIONS[d];
+      LocalDirectionStates d = (LocalDirectionStates)i;
 
-      if (!NewIsConfirmedOpen(
-        x, y, direction))
-      {
-        continue;
-      }
+      if (!FloodIsConfirmedOpen(current.x, current.y, d)) continue;
 
       int nx, ny;
-      NewGetNeighbor(
-        x, y, direction, nx, ny);
+      FloodGetNeighbor(current.x, current.y, d, nx, ny);
 
-      int nextValue =
-        newFlood[x][y] + 1;
+      int nextValue = floodGrid[current.x][current.y] + 1;
 
-      if (nextValue < newFlood[nx][ny])
+      if (nextValue < floodGrid[nx][ny])
       {
-        newFlood[nx][ny] = nextValue;
-
-        queueX[tail] = nx;
-        queueY[tail] = ny;
-        tail++;
+        floodGrid[nx][ny] = nextValue;
+        bfs.push({ nx, ny });
       }
     }
   }
 }
 
-
-// -------------------- Final Speed Run --------------------
-
-bool NewRunSpeedRun()
+bool FloodRunSpeedRun()
 {
-  NewCalculateFinalFlood();
+  FloodCalculateFinalFlood();
+  FloodShowGrid();
 
-  if (newFlood[newMouseX][newMouseY] >= NEW_INF)
+  if (floodGrid[floodMouseX][floodMouseY] >= FLOOD_INF)
   {
-    MazeLog("ERROR: no confirmed path from start to goal.");
-    StopBothMotors();
+    MazeLog("ERROR: no confirmed path from start to goal");
     return false;
   }
 
-  while (!NewIsGoal(
-    newMouseX,
-    newMouseY))
+  while (!FloodIsGoal(floodMouseX, floodMouseY))
   {
-   
+    LocalDirectionStates best;
 
-    char bestDirection;
-
-    if (!NewGetBestDirection(
-      newMouseX,
-      newMouseY,
-      false,
-      true,
-      bestDirection))
+    if (!FloodGetBestDirection(floodMouseX, floodMouseY, false, true, best))
     {
-      MazeLog("ERROR: no confirmed direction during speed run.");
-      StopBothMotors();
+      MazeLog("ERROR: no confirmed direction during speed run");
       return false;
     }
 
     int nx, ny;
+    FloodGetNeighbor(floodMouseX, floodMouseY, best, nx, ny);
 
-    NewGetNeighbor(
-      newMouseX,
-      newMouseY,
-      bestDirection,
-      nx,
-      ny);
-
-    if (newFlood[nx][ny] !=
-        newFlood[newMouseX][newMouseY] - 1)
+    if (floodGrid[nx][ny] != floodGrid[floodMouseX][floodMouseY] - 1)
     {
-      MazeLog("ERROR: final flood invariant broken.");
-      StopBothMotors();
+      MazeLog("ERROR: final flood invariant broken");
       return false;
     }
 
-    NewMoveForward(
-      newMouseX,
-      newMouseY,
-      bestDirection);
+    FloodFaceDirection(best);
+    FloodMoveForward();
   }
-
- 
-
-  StopBothMotors();
 
   return true;
 }
 
 
-// -------------------- Return Robot To Start --------------------
-// This replaces the simulator's waitForManualReset().
-// The maze memory is preserved, but the physical robot drives back to
-// the start before the next algorithm phase.
-
-void NewReturnToStart()
+void FloodWaitForManualReset(const String &nextRun)
 {
-  // We know the robot reached a center goal.
-  // Build a confirmed shortest path from the current goal back to start.
+  MazeLog("");
+  MazeLog("CENTER REACHED.");
+  MazeLog("Waiting 10 seconds before the next run...");
+  MazeLog("Next: " + nextRun);
 
-  int startX = 7;
-  int startY = 0;
+  delay(10000);
 
-  int parentX[NEW_CELL_COUNT][NEW_CELL_COUNT];
-  int parentY[NEW_CELL_COUNT][NEW_CELL_COUNT];
-  bool seen[NEW_CELL_COUNT][NEW_CELL_COUNT];
+  // Reset logical mouse position to START cell
+  floodMouseX = 0;
+  floodMouseY = 0;
 
-  for (int x = 0; x < NEW_CELL_COUNT; x++)
-  {
-    for (int y = 0; y < NEW_CELL_COUNT; y++)
-    {
-      parentX[x][y] = -1;
-      parentY[x][y] = -1;
-      seen[x][y] = false;
-    }
-  }
-
-  int queueX[NEW_CELL_COUNT * NEW_CELL_COUNT];
-  int queueY[NEW_CELL_COUNT * NEW_CELL_COUNT];
-
-  int head = 0;
-  int tail = 0;
-
-  queueX[tail] = newMouseX;
-  queueY[tail] = newMouseY;
-  tail++;
-
-  seen[newMouseX][newMouseY] = true;
-
-  bool found = false;
-
-  while (head < tail && !found)
-  {
-    int x = queueX[head];
-    int y = queueY[head];
-    head++;
-
-    if (x == startX && y == startY)
-    {
-      found = true;
-      break;
-    }
-
-    for (int d = 0; d < 4; d++)
-    {
-      char direction = NEW_DIRECTIONS[d];
-
-      if (!NewIsConfirmedOpen(
-        x, y, direction))
-      {
-        continue;
-      }
-
-      int nx, ny;
-
-      NewGetNeighbor(
-        x, y, direction, nx, ny);
-
-      if (!seen[nx][ny])
-      {
-        seen[nx][ny] = true;
-
-        parentX[nx][ny] = x;
-        parentY[nx][ny] = y;
-
-        queueX[tail] = nx;
-        queueY[tail] = ny;
-        tail++;
-      }
-    }
-  }
-
-  if (!found)
-  {
-    MazeLog("ERROR: cannot return to start.");
-    StopBothMotors();
-    return;
-  }
-
-  // Reconstruct current -> start, then reverse it.
-  int pathX[NEW_CELL_COUNT * NEW_CELL_COUNT];
-  int pathY[NEW_CELL_COUNT * NEW_CELL_COUNT];
-
-  int pathLength = 0;
-
-  int x = startX;
-  int y = startY;
-
-  pathX[pathLength] = x;
-  pathY[pathLength] = y;
-  pathLength++;
-
-  while (!(x == newMouseX && y == newMouseY))
-  {
-    int px = parentX[x][y];
-    int py = parentY[x][y];
-
-    if (px < 0 || py < 0)
-    {
-      MazeLog("ERROR: invalid return path.");
-      StopBothMotors();
-      return;
-    }
-
-    x = px;
-    y = py;
-
-    pathX[pathLength] = x;
-    pathY[pathLength] = y;
-    pathLength++;
-  }
-
-  // path currently goes start -> goal.
-  // Execute it backwards: goal -> start.
-  for (int i = pathLength - 1; i > 0; i--)
-  {
-    int x0 = pathX[i];
-    int y0 = pathY[i];
-
-    int x1 = pathX[i - 1];
-    int y1 = pathY[i - 1];
-
-    char direction;
-
-    if (x1 == x0 + 1 && y1 == y0)
-      direction = 'U';
-    else if (x1 == x0 - 1 && y1 == y0)
-      direction = 'D';
-    else if (y1 == y0 + 1 && x1 == x0)
-      direction = 'R';
-    else if (y1 == y0 - 1 && x1 == x0)
-      direction = 'L';
-    else
-    {
-      MazeLog("ERROR: invalid return movement.");
-      StopBothMotors();
-      return;
-    }
-
-    // Use the same movement function as the new algorithm.
-    NewMoveForward(
-      newMouseX,
-      newMouseY,
-      direction);
-  }
-
-  // Make sure the software position is exactly the start.
-  newMouseX = startX;
-  newMouseY = startY;
-
-  MazeLog("Returned to START.");
+  MazeLog("Mouse position reset to START.");
+  MazeLog("Maze memory preserved.");
+  MazeLog("");
 }
