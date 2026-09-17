@@ -224,7 +224,7 @@ stack<pair<int, int>> mazeSt;
 
 bool up = true, down = false, rgt = false, lft = false;
 // ==================================NEW FLOODFIL ALGORTHIM VARIABLES===============================
-const int FLOOD_SIZE = 16;
+const int FLOOD_SIZE = 8;
 const int FLOOD_NUM_GOALS = 4;
 const int FLOOD_INF = 999;
 
@@ -245,9 +245,10 @@ bool floodVisited[FLOOD_SIZE][FLOOD_SIZE] = {};
 bool floodTraveled[FLOOD_SIZE][FLOOD_SIZE][4] = {};
 
 queue<FloodCell> floodQueue;
+const int HALF = FLOOD_SIZE / 2;
 
-int floodGoalXs[FLOOD_NUM_GOALS] = { 7, 7, 8, 8 };
-int floodGoalYs[FLOOD_NUM_GOALS] = { 7, 8, 7, 8 };
+int floodGoalXs[FLOOD_NUM_GOALS] = { HALF-1 , HALF - 1, HALF, HALF };
+int floodGoalYs[FLOOD_NUM_GOALS] = { HALF -1 , HALF, HALF-1, HALF };
 
 enum FloodRunMode { 
   FLOOD_FIRST_EXPLORATION,
@@ -384,8 +385,8 @@ void loop() {
   //  WriteLeftDistance(ReadLeftDistance());
   //  WriteRightDistance(ReadRightDistance());
   
-  // WriteLeftEncoder();
-  // WriteRightEncoder();
+  //  WriteLeftEncoder();
+  //  WriteRightEncoder();
 
   // WriteLeftDistanceBlueTooth(ReadLeftDistance()); 
   // WriteRightDistanceBlueTooth(ReadLeftDistance());
@@ -650,6 +651,7 @@ void StopBothMotors()
 {
   StopMotor(LEFT);
   StopMotor(RIGHT);
+  delay(100);
 }
 
 // ==================== Read Functions =================
