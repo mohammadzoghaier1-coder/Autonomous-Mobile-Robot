@@ -58,7 +58,7 @@ float motorGearRatio = 29;
 float wheelDiameter = 4.6;  //cm
 float baseSpeed = 130;
 
-const int Step = 22;
+const int Step = 21;
 const int WALL_DETECTED = 10;
 
 float targetDistance_cm = Step;
@@ -863,10 +863,11 @@ void MoveStraight(float targetDistance_cm)
         BackOffFromWall(4);
         break;
       }
-      else
-        wallTimerActive = false ;
     }
+    else
+      wallTimerActive = false ;
   }
+
   StopBothMotors();
 }
 
@@ -2292,6 +2293,8 @@ void FloodWaitForManualReset(const String &nextRun)
   // Reset logical mouse position to START cell
   floodMouseX = 0;
   floodMouseY = 0;
+  TurnToYaw(0);
+  CurrentDirection = FORWARD_D;
 
   MazeLog("Mouse position reset to START.");
   MazeLog("Maze memory preserved.");
