@@ -1,4 +1,4 @@
-//My Arduino code 
+//My Arduino code
 // Cell Size (24*24)
 // Robot Chassis Diameter 122mm
 // Wheel Diameter 46mm
@@ -103,7 +103,7 @@ uint16_t packetSize;
 uint8_t FIFOBuffer[64];
 
 // Orientation / Motion Variables
-Quaternion q; 
+Quaternion q;
 VectorInt16 aa;
 VectorInt16 gy;
 VectorInt16 aaReal;
@@ -113,7 +113,7 @@ VectorFloat gravity;
 float euler[3];
 float ypr[3];
 
-struct MotorSpeed 
+struct MotorSpeed
 {
   float leftSpeed;
   float rightSpeed;
@@ -145,7 +145,7 @@ float Kd_Encoder = 0.5;
 
 // Controller signals
 float P_Encoder;
-float I_Encoder;  
+float I_Encoder;
 float D_Encoder;
 
 float maxPID_Out = 30;
@@ -203,8 +203,31 @@ float Kd_moveDistance = 0.1;
 const float DISTANCE_TOLERANCE = 5.0;
 const int MIN_MOVE_SPEED = 80;
 
+// --- FIX #4: deceleration tuning ---
+// MIN_MOVE_SPEED is now only used far from the target. Near the target the
+// speed is allowed to ramp all the way down to MIN_STOP_SPEED so the robot
+// glides to a stop instead of slamming from full PWM to zero, which was
+// causing inconsistent overshoot (and therefore inconsistent cell spacing)
+// from run to run.
+const float DECEL_ZONE_TICKS = 60;      // start ramping down within this many ticks of target
+const int MIN_STOP_SPEED = 35;          // floor speed while inside the decel zone
+
 float moveDistancePrevError = 0;
 unsigned long moveDistancePrevTime = 0;
+
+//What  I FIX UNTIL 10:00 AM : 
+// --- FIX #1 / #2: continuous wall-following during MoveStraight() ---
+// Previously the only lateral correction happened once, before the move
+// started (CorrectOffset()), and the good wall-following PID functions
+// (CalculateLeftWallSpeed / CalculateRightWallSpeed / CalculateLaserSpeed /
+// LaserCoordinator) were never actually called from MoveForward()/MoveStraight().
+// That meant a straight-line move had zero live feedback against the walls:
+// equal left/right encoder ticks does NOT guarantee the robot stays centered
+// if a wheel slips or there is residual yaw. We now blend a wall-PID lateral
+// correction into the main drive loop whenever a wall is in range.
+//TEXT Details notes is from Claude Code , logic is for me ...
+
+const unsigned long CORRECTION_TIMEOUT_MS = 3000; // safety timeout for any correction while() loop
 
 // ==================== Maze Flood-Fill Variables ================
 // enter n : n = (maze length )^2 - 1
@@ -212,7 +235,7 @@ unsigned long moveDistancePrevTime = 0;
 const int N = 15;
 
 vector<vector<int>> maze(N, vector<int>(N, 0));
-vector<vector<bool>> vis(N, vector<bool>(N, false));  
+vector<vector<bool>> vis(N, vector<bool>(N, false));
 vector<vector<pair<int, int>>> parent(N, vector<pair<int, int>>(N, {-1, -1}));
 
 int dy[4] = {2, -2, 0, 0};
@@ -250,10 +273,10 @@ const int HALF = FLOOD_SIZE / 2;
 int floodGoalXs[FLOOD_NUM_GOALS] = { HALF-1 , HALF - 1, HALF, HALF };
 int floodGoalYs[FLOOD_NUM_GOALS] = { HALF -1 , HALF, HALF-1, HALF };
 
-enum FloodRunMode { 
+enum FloodRunMode {
   FLOOD_FIRST_EXPLORATION,
   FLOOD_SECOND_EXPLORATION,
-  FLOOD_SPEED_RUN 
+  FLOOD_SPEED_RUN
   };
 
 
@@ -314,14 +337,14 @@ void IRAM_ATTR rightEncoderISR_C2() {
 
 // ==================== Setup Function ================
 void setup() {
-  
+
   SerialBT.begin("Zahtar");
   Serial.begin(115200);
   Wire.begin();
 
   MotorInit();
   EncoderInit();
-  LaserInit(); 
+  LaserInit();
   IR_Init();
   LED_Init();
   InitializeMPU_6050();
@@ -384,11 +407,11 @@ FloodWaitForManualReset("RUN 3");
 void loop() {
   //  WriteLeftDistance(ReadLeftDistance());
   //  WriteRightDistance(ReadRightDistance());
-  
+
   //  WriteLeftEncoder();
   //  WriteRightEncoder();
 
-  // WriteLeftDistanceBlueTooth(ReadLeftDistance()); 
+  // WriteLeftDistanceBlueTooth(ReadLeftDistance());
   // WriteRightDistanceBlueTooth(ReadLeftDistance());
 
   // Serial.print("LEFT: ");
@@ -459,7 +482,7 @@ void LED_Init()
 
 void InitializeMPU_6050() {
 #if I2CDEV_IMPLEMENTATION == I2CDEV_ARDUINO_WIRE
-  
+
   Wire.setClock(400000);
 
 #elif I2CDEV_IMPLEMENTATION == I2CDEV_BUILTIN_FASTWIRE
@@ -474,12 +497,12 @@ void InitializeMPU_6050() {
   // Verifiy Connection
   Serial.println(F("Testing MPU6050 connection..."));
 
-  if (mpu.testConnection() == false) 
+  if (mpu.testConnection() == false)
   {
     Serial.println("MPU6050 connection failed");
     while (true);
-  } 
-  else 
+  }
+  else
   {
     Serial.println("MPU6050 connection successful");
     Blink(3);
@@ -511,7 +534,7 @@ void InitializeMPU_6050() {
     mpu.setDMPEnabled(true);
 
     // ESP32 INTERRUPT
-    
+
     MPUIntStatus = mpu.getIntStatus();
 
     // DMP READY
@@ -528,7 +551,7 @@ void InitializeMPU_6050() {
 
 //Initialize Lazers Sensor
 void InitializeVL53() {
-  
+
   // Turn both sensors OFF
   digitalWrite(LEFT_XSHUT_PIN, LOW);
   delay(20);
@@ -593,7 +616,7 @@ void Blink(int times) {
 
     digitalWrite(LED_PIN, HIGH);
     delay(1);
-    digitalWrite(LED_PIN, LOW); 
+    digitalWrite(LED_PIN, LOW);
     delay(1);
   }
 }
@@ -795,16 +818,39 @@ void Turn180() {
 }
 
 
+// ==========================================================================
+// FIX #1 / #2 / #4 — MoveStraight()
+//
+// Changes from the original:
+//  1) The move loop now reads the side lasers every iteration and blends a
+//     wall-following correction (CalculateLaserPID) with the existing
+//     left/right-encoder-symmetry correction. Previously the only lateral
+//     feedback happened once, before the move started (CorrectOffset()),
+//     so any drift introduced mid-cell (wheel slip, uneven torque, small
+//     yaw residue) was invisible until the NEXT cell's one-shot fix.
+//     Both-walls / left-only / right-only / no-walls cases are all handled,
+//     matching the same thresholds used elsewhere in the file
+//     (WALL_DETECTED, targetWallDistance).
+//  2) The forward speed no longer holds at a hard MIN_MOVE_SPEED floor all
+//     the way to the stop point. Inside DECEL_ZONE_TICKS of the target it
+//     is allowed to ramp down toward MIN_STOP_SPEED, giving a repeatable,
+//     gentle stop instead of a hard cut from full PID speed to zero (which
+//     produced inconsistent overshoot -> inconsistent real-world cell
+//     spacing even though the logical Step value was fixed).
+// ==========================================================================
 void MoveStraight(float targetDistance_cm)
 {
   StopBothMotors();
+  delay(20);
   CorrectRotation();
+  delay(20);
   CorrectOffset();
+  delay(20);
   ResetEncoders();
   unsigned long wallDetectedStartTime = 0;
   bool wallTimerActive = false ;
 
-  
+
   long targetTicks = CalculateTargetTicks(targetDistance_cm);
 
   I_Encoder = 0;
@@ -812,6 +858,13 @@ void MoveStraight(float targetDistance_cm)
 
   moveDistancePrevError = targetTicks;
   moveDistancePrevTime = millis();
+
+  // Reset the lateral (laser) PID state fresh for this move so integral
+  // wind-up from a previous cell / previous CorrectOffset() call doesn't
+  // leak into this move.
+  I_laser = 0;
+  laserPrevError = 0;
+  laserPrevTime = millis();
 
   prevTime = millis();
 
@@ -842,8 +895,54 @@ void MoveStraight(float targetDistance_cm)
 
     float straightCorrection = CalculateEncoderPID(encoderError, dt);
 
-    int leftSpeed = currentSpeed - straightCorrection;
-    int rightSpeed = currentSpeed + straightCorrection;
+    // ---- FIX #1: continuous wall-following correction ----
+    float sideCorrection = 0;
+
+    float liveLeftDist = ReadLeftDistance();
+    float liveRightDist = ReadRightDistance();
+
+    bool haveLeftWall  = (liveLeftDist  > 0 && liveLeftDist  <= WALL_DETECTED);
+    bool haveRightWall = (liveRightDist > 0 && liveRightDist <= WALL_DETECTED);
+
+    float laserDt = CalculateDT(currentTime, laserPrevTime);
+    laserPrevTime = currentTime;
+
+    if (haveLeftWall && haveRightWall)
+    {
+      // Both walls present: balance the two distances against each other.
+      laserError = CalculateError(liveRightDist, liveLeftDist);
+      sideCorrection = CalculateLaserPID(laserError, laserDt);
+    }
+    else if (haveLeftWall)
+    {
+      // Only left wall: hold a fixed target distance from it.
+      laserError = CalculateError(targetWallDistance, liveLeftDist);
+      sideCorrection = CalculateLaserPID(laserError, laserDt);
+    }
+    else if (haveRightWall)
+    {
+      // Only right wall: hold a fixed target distance from it (sign flipped
+      // relative to the left-wall case, matching CalculateRightWallSpeed()).
+      laserError = CalculateError(targetWallDistance, liveRightDist);
+      sideCorrection = -CalculateLaserPID(laserError, laserDt);
+    }
+    else
+    {
+      // No walls in range: nothing to center against. Fall back fully on
+      // the encoder-symmetry correction (straightCorrection) and rely on
+      // the yaw already locked in by CorrectRotation() at the start of the
+      // move.
+      I_laser = 0;
+      laserPrevError = 0;
+    }
+
+    // Blend both corrections. The wall correction is weighted a bit lower
+    // than the raw laser PID output so it nudges heading/position rather
+    // than fighting the encoder-symmetry term outright.
+    float totalCorrection = straightCorrection + (0.5f * sideCorrection);
+
+    int leftSpeed = currentSpeed - totalCorrection;
+    int rightSpeed = currentSpeed + totalCorrection;
 
     leftSpeed = constrain(leftSpeed, 0, 180);
     rightSpeed = constrain(rightSpeed, 0, 180);
@@ -1009,10 +1108,19 @@ void BackOffFromWall(float distance_cm)
 
     long targetTicks = CalculateTargetTicks(distance_cm);
 
+    unsigned long startTime = millis();
+
     while (GetAverageEncoderTicks() < targetTicks)
     {
         MotorBackward(110, LEFT);
         MotorBackward(110, RIGHT);
+
+        // FIX #2: timeout guard so a stuck/blocked robot doesn't hang forever
+        if (millis() - startTime > CORRECTION_TIMEOUT_MS)
+        {
+          MazeLog("WARNING: BackOffFromWall timed out");
+          break;
+        }
     }
 
     StopBothMotors();
@@ -1032,72 +1140,106 @@ void CorrectRotation()
   TurnToYaw(directionYaw[CurrentDirection]);
 }
 
-// Correct robot offset from the walls
+// ==========================================================================
+// FIX #1 (bug) — CorrectOffset()
+//
+// The original used `if (leftWallDistance < 7) { ... } else if
+// (WallRightPresent()) { ... }`. That meant:
+//   - If the left wall was, say, 6.5 cm away (outside the "<5" fine-tune
+//     branch but still inside the outer "<7" branch), NOTHING happened,
+//     AND the right wall was never even checked in the same pass, because
+//     it was in the `else if`.
+//   - The two side checks were mutually exclusive even though a robot can
+//     legitimately need to react to either wall independently.
+//
+// This version checks left and right walls independently (two separate
+// `if` blocks, not `if / else if`), and every correction while()-loop now
+// has a millis() timeout so a bad reading or an unreachable target can't
+// hang the robot indefinitely (this was a real "gets stuck / never
+// corrects" risk in the original, since forward/backward shuffling cannot
+// fix a problem that is actually a heading error, per the explanation
+// given above).
+// ==========================================================================
 void CorrectOffset()
 {
-  ResetEncoders(); 
+  ResetEncoders();
   UpdateLasers();
 
-  // Left wall
-  if (leftWallDistance < 7)
+  // ---- LEFT WALL ----
+  if (leftWallDistance > 0 && leftWallDistance < 5)
   {
-    if (leftWallDistance < 5)
+    bool goingForward = true;
+    unsigned long startTime = millis();
+
+    while (leftWallDistance < 6)
     {
-      bool goingForward = true;
+      UpdateLasers();
 
-      while (leftWallDistance < 6)
+      long avgTicks = GetAverageEncoderTicks();
+
+      if (avgTicks < 100 && goingForward)
       {
-        UpdateLasers();
-
-        long avgTicks = GetAverageEncoderTicks();
-
-        if (avgTicks < 100 && goingForward)
-        {
-          MotorForward(160, LEFT);
-          MotorForward(110, RIGHT);
-        }
-        else if (avgTicks > 0)
-        {
-          if (goingForward)
-            CorrectRotation();
-
-          goingForward = false;
-
-          MotorBackward(150, LEFT);
-          MotorBackward(120, RIGHT);
-        }
-        else
-        {
-          CorrectRotation();
-          goingForward = true;
-        }
-      }
-
-      while (GetAverageEncoderTicks() > 0)
-      {
-        MotorBackward(105, LEFT);
-        MotorBackward(105, RIGHT);
-      }
-
-      while (GetAverageEncoderTicks() < 0)
-      {
-        MotorForward(110, LEFT);
+        MotorForward(160, LEFT);
         MotorForward(110, RIGHT);
       }
+      else if (avgTicks > 0)
+      {
+        if (goingForward)
+          CorrectRotation();
 
-      CorrectRotation();
+        goingForward = false;
 
-      StopBothMotors();
+        MotorBackward(150, LEFT);
+        MotorBackward(120, RIGHT);
+      }
+      else
+      {
+        CorrectRotation();
+        goingForward = true;
+      }
+
+      // FIX #2: timeout guard
+      if (millis() - startTime > CORRECTION_TIMEOUT_MS)
+      {
+        MazeLog("WARNING: CorrectOffset (left) timed out");
+        break;
+      }
     }
+
+    startTime = millis();
+    while (GetAverageEncoderTicks() > 0)
+    {
+      MotorBackward(105, LEFT);
+      MotorBackward(105, RIGHT);
+      if (millis() - startTime > CORRECTION_TIMEOUT_MS) break;
+    }
+
+    startTime = millis();
+    while (GetAverageEncoderTicks() < 0)
+    {
+      MotorForward(110, LEFT);
+      MotorForward(110, RIGHT);
+      if (millis() - startTime > CORRECTION_TIMEOUT_MS) break;
+    }
+
+    CorrectRotation();
+    StopBothMotors();
+
+    UpdateLasers();
   }
-  // Right wall
-  else if(WallRightPresent())
+
+  // ---- RIGHT WALL ----
+  // Independent `if`, not `else if` — runs even if the left-wall block
+  // above already ran, so a robot pinched between two close walls gets
+  // both corrections instead of only the left one.
+  if (WallRightPresent())
   {
     float rightDistance = ReadRightDistance();
 
-    if (rightDistance < 4)
+    if (rightDistance > 0 && rightDistance < 4)
     {
       bool goingForward = true;
+      unsigned long startTime = millis();
 
       while (rightDistance < 6)
       {
@@ -1127,25 +1269,36 @@ void CorrectOffset()
           CorrectRotation();
           goingForward = true;
         }
+
+        // FIX #2: timeout guard
+        if (millis() - startTime > CORRECTION_TIMEOUT_MS)
+        {
+          MazeLog("WARNING: CorrectOffset (right) timed out");
+          break;
+        }
       }
 
+      startTime = millis();
       while (GetAverageEncoderTicks() > 0)
       {
         MotorBackward(105, LEFT);
         MotorBackward(105, RIGHT);
+        if (millis() - startTime > CORRECTION_TIMEOUT_MS) break;
       }
 
+      startTime = millis();
       while (GetAverageEncoderTicks() < 0)
       {
         MotorForward(110, LEFT);
         MotorForward(110, RIGHT);
+        if (millis() - startTime > CORRECTION_TIMEOUT_MS) break;
       }
 
       CorrectRotation();
-
       StopBothMotors();
     }
   }
+  delay(20);
 }
 
 // ==================== Functions =================
@@ -1317,8 +1470,8 @@ float CalculateEncoderPID(float error, float dt) {
 
     encoderPrevError = error;
 
-    return constrain(P_Encoder + I_Encoder + D_Encoder, -maxPID_Out, maxPID_Out);    
-    
+    return constrain(P_Encoder + I_Encoder + D_Encoder, -maxPID_Out, maxPID_Out);
+
 }
 
 float CalculateTurnPID(float error, float dt)
@@ -1358,6 +1511,25 @@ float CalculateLaserPID(float error, float dt)
   return output;
 }
 
+// ==========================================================================
+// FIX #4 — CalculateMoveDistancePID()
+//
+// The original clamped the output with `constrain(distanceOutput,
+// MIN_MOVE_SPEED, baseSpeed)`. Because MIN_MOVE_SPEED (80) was used as the
+// LOWER bound everywhere, including right up until distanceError dropped
+// below DISTANCE_TOLERANCE, the robot always approached its stop point at
+// a non-trivial PWM and then hard-stopped almost instantly once the
+// (very tight, ~0.09 cm) tolerance was hit. At that speed real stopping
+// distance depends on battery voltage / floor friction / wheel wear, so
+// the ACTUAL travel distance varied cell to cell even though the logical
+// Step value was fixed — this is very likely a big contributor to your
+// observed centering drift.
+//
+// Fix: once the remaining distance is inside DECEL_ZONE_TICKS, the speed
+// floor is relaxed down to MIN_STOP_SPEED, proportionally to how close the
+// robot is to the target. Far from the target, behavior is unchanged
+// (floor stays at MIN_MOVE_SPEED).
+// ==========================================================================
 float CalculateMoveDistancePID(float distanceError)
 {
   unsigned long currentDistanceTime = millis();
@@ -1373,9 +1545,20 @@ float CalculateMoveDistancePID(float distanceError)
   moveDistancePrevError = distanceError;
   moveDistancePrevTime = currentDistanceTime;
 
+  float lowerBound = MIN_MOVE_SPEED;
+
+  if (distanceError < DECEL_ZONE_TICKS)
+  {
+    // Linearly relax the speed floor as we approach the target so the
+    // robot glides to a stop instead of cutting hard from high PWM to 0.
+    float ratio = distanceError / DECEL_ZONE_TICKS; // 1.0 far away -> 0.0 at target
+    ratio = constrain(ratio, 0.0f, 1.0f);
+    lowerBound = MIN_STOP_SPEED + (MIN_MOVE_SPEED - MIN_STOP_SPEED) * ratio;
+  }
+
   return constrain(
     distanceOutput,
-    MIN_MOVE_SPEED,
+    lowerBound,
     baseSpeed
   );
 }
@@ -1611,7 +1794,7 @@ void FirstRun()
     while (!mazeSt.empty())
     {
         // Print the Values Each time it move a cell
-        WriteLeftDistanceBlueTooth(ReadLeftDistance()); 
+        WriteLeftDistanceBlueTooth(ReadLeftDistance());
         WriteRightDistanceBlueTooth(ReadLeftDistance());
         WriteEncoderValuesBlueTooth();
         WriteMPUValuesBlueTooth();
@@ -1725,7 +1908,7 @@ void SecondRun()
 
     while (!q.empty() && !found)
     {
-        
+
         int x = q.front().first;
         int y = q.front().second;
         q.pop();
@@ -2057,7 +2240,8 @@ bool FloodUpdateCell(int x, int y)
 
 void FloodReflood()
 {
-  while (!floodQueue.empty()) floodQueue.pop();
+  while (!floodQueue.empty())
+  floodQueue.pop();
 
   floodQueue.push({ floodMouseX, floodMouseY });
 
