@@ -57,7 +57,7 @@ float motorGearRatio = 29;
 float wheelDiameter = 4.6;  //cm
 float baseSpeed = 130;
 
-const int Step = 22;
+const int Step = 24;
 const int WALL_DETECTED = 10;
 
 float targetDistance_cm = Step;
