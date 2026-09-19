@@ -196,11 +196,11 @@ float turnError;
 float turnPrevError;
 
 // Movement PID
-float Kp_moveDistance = 0.4;
+float Kp_moveDistance = 0.3;
 float Kd_moveDistance = 0.1;
 
 const float DISTANCE_TOLERANCE = 5.0;
-const int MIN_MOVE_SPEED = 100;
+const int MIN_MOVE_SPEED = 70;
 
 float moveDistancePrevError = 0;
 unsigned long moveDistancePrevTime = 0;
@@ -1040,6 +1040,25 @@ void TurnToYaw(float targetYaw) {
 
 
 // ==================== Accuracy and Movment Improvement Functions ====================
+int CalculateHalfwaySpeed(long avgTicks, long targetTicks, int decreaseAmount)
+{
+  if (avgTicks <= targetTicks / 2)
+  {
+    return baseSpeed;
+  }
+
+  int currentSpeed = baseSpeed;
+
+  float progress = (float)(avgTicks - targetTicks / 2) / (float)(targetTicks / 2);
+
+  int decrease = progress * decreaseAmount;
+
+  currentSpeed -= decrease;
+
+  return constrain(currentSpeed, 75, baseSpeed);
+}
+
+
 void BackOffFromWall(float distance_cm)
 {
   ResetEncoders();
