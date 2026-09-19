@@ -57,7 +57,7 @@ float motorGearRatio = 29;
 float wheelDiameter = 4.6;  //cm
 float baseSpeed = 130;
 
-const int Step = 22;
+const int Step = 24;
 const int WALL_DETECTED = 10;
 
 float targetDistance_cm = Step;
@@ -196,11 +196,11 @@ float turnError;
 float turnPrevError;
 
 // Movement PID
-float Kp_moveDistance = 0.4;
+float Kp_moveDistance = 0.3;
 float Kd_moveDistance = 0.1;
 
 const float DISTANCE_TOLERANCE = 5.0;
-const int MIN_MOVE_SPEED = 80;
+const int MIN_MOVE_SPEED = 70;
 
 float moveDistancePrevError = 0;
 unsigned long moveDistancePrevTime = 0;
@@ -301,7 +301,7 @@ void setup() {
   CurrentDirection = FORWARD_D;
 
   // Run the maze flood-fill exploration once
-  
+  delay(5000);
   MazeLog("Running...");
   MazeLog("Flood Fill Algorithm");
   FirstRun();
@@ -688,7 +688,118 @@ void WriteMazeBlueTooth()
   }
 }
 
+void TrackMove()
+{
+  SerialBT.println();
+  SerialBT.println("===== MOVE TRACK =====");
 
+  // Maze position
+
+  // Current direction
+  SerialBT.print("Direction: ");
+
+  switch (CurrentDirection)
+  {
+    case FORWARD_D:
+      SerialBT.println("FORWARD");
+      break;
+
+    case RIGHT_D:
+      SerialBT.println("RIGHT");
+      break;
+
+    case BACKWARD_D:
+      SerialBT.println("BACKWARD");
+      break;
+
+    case LEFT_D:
+      SerialBT.println("LEFT");
+      break;
+  }
+
+  // MPU6050 initialization/status
+  SerialBT.println("--- MPU6050 ---");
+
+  SerialBT.print("MPU Connection: ");
+  SerialBT.println(mpu.testConnection() ? "OK" : "FAILED");
+
+  SerialBT.print("DMP Ready: ");
+  SerialBT.println(isDMPReady ? "YES" : "NO");
+
+  SerialBT.print("DMP Init Code: ");
+  SerialBT.println(devStatus);
+
+  SerialBT.print("DMP Packet Size: ");
+  SerialBT.println(packetSize);
+
+  SerialBT.print("MPU Interrupt Status: ");
+  SerialBT.println(MPUIntStatus);
+
+  SerialBT.print("Yaw: ");
+  SerialBT.println(yawAngle, 2);
+
+  SerialBT.print("Yaw Error: ");
+  SerialBT.println(turnError, 2);
+
+  // Encoder values
+  SerialBT.println("--- Encoders ---");
+
+  SerialBT.print("Left Encoder: ");
+  SerialBT.println(leftEncoderCount);
+
+  SerialBT.print("Right Encoder: ");
+  SerialBT.println(rightEncoderCount);
+
+  SerialBT.print("Average Encoder: ");
+  SerialBT.println(GetAverageEncoderTicks());
+
+  // Laser values
+  SerialBT.println("--- Lasers ---");
+
+  SerialBT.print("Left Distance: ");
+  SerialBT.print(leftWallDistance, 2);
+  SerialBT.println(" cm");
+
+  SerialBT.print("Right Distance: ");
+  SerialBT.print(rightWallDistance, 2);
+  SerialBT.println(" cm");
+
+  SerialBT.print("Target Wall Distance: ");
+  SerialBT.print(targetWallDistance, 2);
+  SerialBT.println(" cm");
+
+  // Front wall
+  SerialBT.print("Front Wall: ");
+  SerialBT.println(IsFrontWallDetected() ? "YES" : "NO");
+
+  // Movement
+  SerialBT.println("--- Movement ---");
+
+  SerialBT.print("Step: ");
+  SerialBT.print(Step);
+  SerialBT.println(" cm");
+
+  SerialBT.print("Target Distance: ");
+  SerialBT.print(targetDistance_cm, 2);
+  SerialBT.println(" cm");
+
+  SerialBT.print("Base Speed: ");
+  SerialBT.println(baseSpeed);
+
+  // PID errors
+  SerialBT.println("--- PID ---");
+
+  SerialBT.print("Encoder Error: ");
+  SerialBT.println(encoderError, 2);
+
+  SerialBT.print("Laser Error: ");
+  SerialBT.println(laserError, 2);
+
+  SerialBT.print("Turn Error: ");
+  SerialBT.println(turnError, 2);
+
+  SerialBT.println("====================");
+}
 
 // ==================== Control Functions =================
 void TurnRight90() {
@@ -731,18 +842,28 @@ void Turn180() {
   delay(100);
 }
 
-
 void MoveStraight(float targetDistance_cm)
 {
   StopBothMotors();
+  delay(10);
   CorrectRotation();
+  delay(10);
   CorrectOffset();
+  delay(10);
   ResetEncoders();
+  delay(10);
+
+  long targetTicks = CalculateTargetTicks(targetDistance_cm);
 
   unsigned long wallDetectedStartTime = 0;
   bool wallTimerActive = false;
 
-  long targetTicks = CalculateTargetTicks(targetDistance_cm);
+  unsigned long encoderCheckTime = millis();
+  long previousEncoderTicks = GetAverageEncoderTicks();
+
+  const unsigned long ENCODER_CHECK_INTERVAL = 200;
+  const long ENCODER_STALL_THRESHOLD = 5;
+  const unsigned long WALL_DETECTED_TIME = 2000;
 
   I_Encoder = 0;
   encoderPrevError = 0;
@@ -782,32 +903,54 @@ void MoveStraight(float targetDistance_cm)
     int leftSpeed = currentSpeed - straightCorrection;
     int rightSpeed = currentSpeed + straightCorrection;
 
-    leftSpeed = constrain(leftSpeed, 0, 180);
-    rightSpeed = constrain(rightSpeed, 0, 180);
+    leftSpeed = constrain(leftSpeed, 0, 220);
+    rightSpeed = constrain(rightSpeed, 0, 220);
 
     MotorForward(leftSpeed, LEFT);
     MotorForward(rightSpeed, RIGHT);
 
-    if (IsFrontWallDetected())
-    {
+    bool encoderStalled = false;
 
-    if (!wallTimerActive)
+    if (millis() - encoderCheckTime >= ENCODER_CHECK_INTERVAL)
     {
+      long currentEncoderTicks = GetAverageEncoderTicks();
+
+      long encoderChange =
+        abs(currentEncoderTicks - previousEncoderTicks);
+
+      if (encoderChange <= ENCODER_STALL_THRESHOLD)
+      {
+        encoderStalled = true;
+      }
+
+      previousEncoderTicks = currentEncoderTicks;
+      encoderCheckTime = millis();
+    }
+
+    bool irWallDetected = IsFrontWallDetected();
+
+    if (irWallDetected || encoderStalled)
+    {
+      if (!wallTimerActive)
+      {
         wallTimerActive = true;
         wallDetectedStartTime = millis();
-    }
+      }
 
-    if (millis() - wallDetectedStartTime >= 1500)
-    {
-      StopBothMotors();
-      BackOffFromWall(4);
-      break;
+      if (millis() - wallDetectedStartTime >= WALL_DETECTED_TIME)
+      {
+        StopBothMotors();
+        BackOffFromWall(6);  
+        break;
+      }
+      
     }
-    }else {
+    else
+    {
       wallTimerActive = false;
     }
   }
-
+  TrackMove();
   StopBothMotors();
 }
 
@@ -895,72 +1038,43 @@ void TurnToYaw(float targetYaw) {
   delay(100);
 }
 
-void LaserCoordinator()
+
+// ==================== Accuracy and Movment Improvement Functions ====================
+int CalculateHalfwaySpeed(long avgTicks, long targetTicks, int decreaseAmount)
 {
-  float leftDistance = ReadLeftDistance();
-  float rightDistance = ReadRightDistance();
-
-  // Reset encoder distance
-  ResetEncoders();
-
-  // Reset Laser PID
-  I_laser = 0;
-  laserPrevError = 0;
-  laserPrevTime = millis();
-
-  // Both walls detected
-  if (leftDistance <= 8 && rightDistance <= 8)
+  if (avgTicks <= targetTicks / 2)
   {
-    while (TargetDistance())
-    {
-      MotorSpeed effecterror = CalculateLaserSpeed();
-
-      MotorForward(effecterror.leftSpeed, LEFT);
-      MotorForward(effecterror.rightSpeed, RIGHT);
-    }
+    return baseSpeed;
   }
-  // Left wall detected
-  else if (leftDistance <= 8 && rightDistance >= 8)
-  {
-    while (TargetDistance())
-    {
-      MotorSpeed effecterror = CalculateLeftWallSpeed();
 
-      MotorForward(effecterror.leftSpeed, LEFT);
-      MotorForward(effecterror.rightSpeed, RIGHT);
-    }
-  }
-  // Right wall detected
-  else if (leftDistance >= 8 && rightDistance <= 8)
-  {
-    while (TargetDistance())
-    {
-      MotorSpeed effecterror = CalculateRightWallSpeed();
+  int currentSpeed = baseSpeed;
 
-      MotorForward(effecterror.leftSpeed,LEFT);
-      MotorForward(effecterror.rightSpeed,RIGHT);
-    }
-  }
+  float progress = (float)(avgTicks - targetTicks / 2) / (float)(targetTicks / 2);
+
+  int decrease = progress * decreaseAmount;
+
+  currentSpeed -= decrease;
+
+  return constrain(currentSpeed, 75, baseSpeed);
 }
 
 
-// ==================== Accuracy and Movment Improvement Functions ====================
 void BackOffFromWall(float distance_cm)
 {
-    ResetEncoders();
+  ResetEncoders();
 
-    long targetTicks = CalculateTargetTicks(distance_cm);
+  long targetTicks = CalculateTargetTicks(distance_cm);
 
-    while (GetAverageEncoderTicks() < targetTicks)
-    {
-        MotorBackward(110, LEFT);
-        MotorBackward(110, RIGHT);
-    }
+  while (abs(GetAverageEncoderTicks()) < targetTicks)
+  {
+    MotorBackward(110, LEFT);
+    MotorBackward(110, RIGHT);
+  }
 
-    StopBothMotors();
-    delay(10);
+  StopBothMotors();
+  delay(100);
 
-    CorrectRotation();
+  CorrectRotation();
 }
 
 // Correct robot orientation before moving
@@ -1162,90 +1276,6 @@ bool IsFrontWallDetected() {
   return (digitalRead(IR_pin) == LOW);
 }
 
-// ==================== Laser Error Functions ====================
-MotorSpeed CalculateLaserSpeed()
-{
-  float leftDistance = ReadLeftDistance();
-  float rightDistance = ReadRightDistance();
-
-  if (leftDistance <= 0 || rightDistance <= 0)
-  {
-    StopBothMotors();
-    return {0, 0};
-  }
-
-  laserError = CalculateError(rightDistance, leftDistance);
-
-  unsigned long currentTime = millis();
-
-  float dt = CalculateDT(currentTime, laserPrevTime);
-
-  laserPrevTime = currentTime;
-  float output = CalculateLaserPID(laserError, dt);
-
-  int leftSpeed = baseSpeed - output;
-  int rightSpeed = baseSpeed + output;
-
-  leftSpeed = constrain(leftSpeed, 0, 180);
-  rightSpeed = constrain(rightSpeed, 0, 180);
-
-  return {leftSpeed, rightSpeed};
-}
-
-MotorSpeed CalculateLeftWallSpeed()
-{
-  float leftDistance = ReadLeftDistance();
-
-  if (leftDistance <= 0)
-  {
-    StopBothMotors();
-    return {0, 0};
-  }
-
-  laserError = CalculateError(targetWallDistance, leftDistance);
-
-  unsigned long currentTime = millis();
-  float dt = CalculateDT(currentTime, laserPrevTime);
-
-  laserPrevTime = currentTime;
-
-  float output = CalculateLaserPID(laserError, dt);
-
-  int leftSpeed = baseSpeed - output;
-  int rightSpeed = baseSpeed + output;
-
-  leftSpeed = constrain(leftSpeed, 0, 180);
-  rightSpeed = constrain(rightSpeed, 0, 180);
-
-  return {leftSpeed, rightSpeed};
-}
-
-MotorSpeed CalculateRightWallSpeed()
-{
-  float rightDistance = ReadRightDistance();
-  if (rightDistance <= 0)
-  {
-    StopBothMotors();
-    return {0, 0};
-  }
-
-  laserError = CalculateError(targetWallDistance, rightDistance);
-
-  unsigned long currentTime = millis();
-  float dt = CalculateDT(currentTime, laserPrevTime);
-
-  laserPrevTime = currentTime;
-
-  float output = CalculateLaserPID(laserError, dt);
-
-  int leftSpeed = baseSpeed + output;
-  int rightSpeed = baseSpeed - output;
-
-  leftSpeed = constrain(leftSpeed, 0, 180);
-  rightSpeed = constrain(rightSpeed, 0, 180);
-
-  return {leftSpeed, rightSpeed};
-}
 
 // ==================== PID Functions =================
 float CalculateEncoderPID(float error, float dt) {
@@ -1551,11 +1581,6 @@ void FirstRun()
 
     while (!mazeSt.empty())
     {
-        // Print the Values Each time it move a cell
-        WriteLeftDistanceBlueTooth(ReadLeftDistance()); 
-        WriteRightDistanceBlueTooth(ReadLeftDistance());
-        WriteEncoderValuesBlueTooth();
-        WriteMPUValuesBlueTooth();
 
         int x = mazeSt.top().first;
         int y = mazeSt.top().second;
