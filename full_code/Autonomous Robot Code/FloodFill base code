@@ -85,6 +85,7 @@ portMUX_TYPE leftEncoderMux = portMUX_INITIALIZER_UNLOCKED;
 portMUX_TYPE rightEncoderMux = portMUX_INITIALIZER_UNLOCKED;
 
 LocalDirectionStates CurrentDirection;
+LocalDirectionStates PreviousDirection;
 BluetoothSerial SerialBT;
 
 Adafruit_VL53L0X leftLaser;
@@ -203,6 +204,8 @@ const int MIN_MOVE_SPEED = 60;
 
 float moveDistancePrevError = 0;
 unsigned long moveDistancePrevTime = 0;
+
+const unsigned long CORRECTION_TIMEOUT_MS = 3000;
 
 // ==================== Maze Flood-Fill Variables ================
 // enter n : n = (maze length )^2 - 1
@@ -328,6 +331,7 @@ void setup() {
 
   // Set Initial Direction / Position
   CurrentDirection = FORWARD_D;
+  PreviousDirection = FORWARD_D;
   floodMouseX = 0;
   floodMouseY = 0;
 
@@ -776,8 +780,30 @@ void TrackMove()
       break;
   }
 
+  SerialBT.println("--- MPU6050 Status ---");
+
+  SerialBT.print("MPU Connection: ");
+  SerialBT.println(mpu.testConnection() ? "OK" : "FAILED");
+
+  SerialBT.print("DMP Status: ");
+  SerialBT.println(isDMPReady ? "READY" : "NOT READY");
+
+  SerialBT.print("DMP Init Code: ");
+  SerialBT.println(devStatus);
+
+  SerialBT.print("DMP Packet Size: ");
+  SerialBT.println(packetSize);
+
+  SerialBT.print("MPU Interrupt Status: ");
+  SerialBT.println(MPUIntStatus);
+
   SerialBT.print("Yaw: ");
-  SerialBT.println(yawAngle);
+  SerialBT.println(yawAngle, 2);
+
+  SerialBT.print("Yaw Error: ");
+  SerialBT.println(turnError, 2);
+
+  SerialBT.println("--- Motion ---");
 
   SerialBT.print("Left Encoder: ");
   SerialBT.println(leftEncoderCount);
@@ -794,6 +820,8 @@ void TrackMove()
   SerialBT.print("Front Wall: ");
   SerialBT.println(WallFrontPresent() ? "YES" : "NO");
 
+  SerialBT.println("--- Flood Fill ---");
+
   SerialBT.print("Flood Value: ");
   SerialBT.println(floodGrid[floodMouseX][floodMouseY]);
 
@@ -802,6 +830,8 @@ void TrackMove()
 
   SerialBT.print("Traveled: ");
   SerialBT.println(floodTraveled[floodMouseX][floodMouseY] ? "YES" : "NO");
+
+  SerialBT.println("--- Movement Settings ---");
 
   SerialBT.print("Step: ");
   SerialBT.println(Step);
@@ -820,9 +850,9 @@ void TrackMove()
 void TurnRight90() {
   // Stop before starting the turn
   StopBothMotors();
-  delay(20);
+  delay(50);
 
-  // Find new Direction
+  PreviousDirection = CurrentDirection;
   LocalDirectionStates newDirection = (LocalDirectionStates)((CurrentDirection + 1) % 4);
 
   // Turn to target Yaw
@@ -835,26 +865,28 @@ void TurnRight90() {
 void TurnLeft90() {
 
   StopBothMotors();
-  delay(20);
+  delay(50);
 
+  PreviousDirection = CurrentDirection;
   LocalDirectionStates newDirection = (LocalDirectionStates)((CurrentDirection + 3) % 4);
-
+  
   TurnToYaw(directionYaw[newDirection]);
+
   CurrentDirection = newDirection;
 }
 
 
 void Turn180() {
   StopBothMotors();
-  delay(20);
+  delay(50);
 
+  PreviousDirection = CurrentDirection;
   LocalDirectionStates newDirection = (LocalDirectionStates)((CurrentDirection + 2) % 4);
 
   TurnToYaw(directionYaw[newDirection]);
   CurrentDirection = newDirection;
 
   StopBothMotors();
-  delay(20);
 }
 
 
@@ -959,6 +991,7 @@ void MoveStraight(float targetDistance_cm)
         BackOffFromWall(10);  
         break;
       }
+      
     }
     else
     {
@@ -1016,14 +1049,14 @@ void TurnToYaw(float targetYaw) {
     float output = CalculateTurnPID(turnError, dt);
 
     // Debugging
-    // Serial.print("Yaw: ");
-    // Serial.print(yawAngle, 2);
+    Serial.print("Yaw: ");
+    Serial.print(yawAngle, 2);
 
-    // Serial.print(" | Error: ");
-    // Serial.print(turnError, 2);
+    Serial.print(" | Error: ");
+    Serial.print(turnError, 2);
 
-    // Serial.print(" | Output: ");
-    // Serial.println(output, 2);
+    Serial.print(" | Output: ");
+    Serial.println(output, 2);
 
     // Minimum effective speed
     if (abs(output) < TURN_MIN_EFFECTIVE_SPEED) {
@@ -1095,7 +1128,7 @@ void CorrectOffset()
     bool goingForward = true;
     unsigned long startTime = millis();
 
-    while (leftWallDistance < 6)
+    while (leftWallDistance < 7)
     {
       UpdateLasers();
 
